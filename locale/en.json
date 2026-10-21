@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Session Port",
+    "description": "Export the current session as an archive, or import an exported session as a new conversation in the current workspace, attachments included."
+  }
+}

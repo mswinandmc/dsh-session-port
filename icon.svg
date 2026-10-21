@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Session Port">
+  <title>Session Port</title>
+  <defs>
+    <linearGradient id="session-port-stroke" x1="8" y1="8" x2="56" y2="56" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2f7cf6"/>
+      <stop offset="1" stop-color="#16a6a0"/>
+    </linearGradient>
+  </defs>
+  <rect x="5" y="5" width="54" height="54" rx="16" fill="#2f7cf6" opacity="0.1"/>
+  <rect x="12" y="12" width="40" height="40" rx="12" fill="none" stroke="url(#session-port-stroke)" stroke-width="3.2"/>
+  <g fill="none" stroke="url(#session-port-stroke)" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M32 20.5v23"/>
+    <path d="M24.5 28 32 20.5 39.5 28"/>
+    <path d="M24.5 36 32 43.5 39.5 36"/>
+  </g>
+</svg>

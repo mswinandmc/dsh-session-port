@@ -1,0 +1,2 @@
+Hello from PowerShell Compress-Archive!
+第二行：中文内容 ✓
