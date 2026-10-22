@@ -61,5 +61,12 @@
   "publishConfig": {
     "access": "public"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test test/format.test.mjs test/host.test.mjs test/client.test.mjs",
+    "test:zip": "node --test test/zip.test.mjs",
+    "test:all": "node --test test/format.test.mjs test/host.test.mjs test/client.test.mjs test/zip.test.mjs",
+    "check": "node scripts/check-manifest.mjs && npm test",
+    "pack:check": "npm pack --dry-run"
+  }
 }

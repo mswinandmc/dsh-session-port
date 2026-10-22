@@ -1,0 +1,50 @@
+name: ci
+
+# Every push to main and every PR: the full suite on both operating systems this
+# plugin is used on (DSH runs the same client bundle in Electron on all three;
+# the ZIP and attachment code paths are platform-sensitive).
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Read-only: CI never publishes or pushes anything.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (node ${{ matrix.node }} / ${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [22, 24]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # No install step: the package has zero runtime and dev dependencies.
+      - name: manifest + Harness contract preflight
+        run: node scripts/check-manifest.mjs
+
+      - name: unit tests (format, host, client)
+        run: npm test
+
+      # The ZIP suite shells out to PowerShell when it is available (it is, on
+      # both hosted runners) and falls back to hand-built archives otherwise.
+      - name: ZIP interoperability tests
+        run: npm run test:zip
+
+      - name: published file list
+        run: npm pack --dry-run

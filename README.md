@@ -92,3 +92,29 @@ node --test test/zip.test.mjs      # 34 项：ZIP 读写、data descriptor 流�
 - 用插件工具把该压缩包导入回当前工作区 → 新会话落盘（`sessions/--D-hyw--/<新 id>/session.v4.jsonl.zstd`，948 条事件、序号连续），并自动加入 `D:\hyw` 工作区的会话列表；
 - 浏览器路由已注册并通过 Connection 信任栅栏（未认证请求全部 401）；
 - 界面按钮的渲染与点击需刷新页面后点击验证（本会话无浏览器控制能力，未做视觉验收）。
+
+## 发布流程（维护者）
+
+本仓库的 CI 与发版都在 GitHub Actions 里：
+
+- **`ci.yml`**：push 到 `main` 和每个 PR 上，在 Ubuntu + Windows × Node 22/24 跑
+  manifest 预检、单元测试、ZIP 互操作测试与 `npm pack --dry-run`。
+- **`release.yml`**：推送 `v*` tag 触发。它校验 tag 与 `package.json` 版本一致、
+  跑全部测试、用 **npm trusted publishing（OIDC，无需 token / 无需 2FA）** 发布，
+  然后创建带自动 changelog 的 GitHub Release。预发布 tag（如 `v0.2.0-beta.1`）
+  只会发到 `beta` dist-tag，不会动 `latest`；重复跑历史 tag 安全（已发布的版本跳过）。
+
+一次性设置：在 npm 包页面 **Settings → Trusted Publishers** 添加 GitHub Actions，
+仓库填 `mswinandmc/dsh-session-port`、workflow 填 `release.yml`（环境留空）。
+
+之后每次发版：
+
+```bash
+# 1) 改 package.json 版本（如 0.1.2），提交
+git commit -am "chore: release 0.1.2"
+# 2) 打 tag 并推送 → Actions 自动测试、发布 npm、建 Release
+git tag v0.1.2
+git push origin main --tags
+```
+
+本地预检：`npm run check`（= manifest 预检 + 单元测试）。

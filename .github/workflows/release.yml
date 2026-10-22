@@ -1,0 +1,113 @@
+name: release
+
+# One way in: a `v*` tag on a commit that already has package.json at the same
+# version. Pushing a tag is the release decision; nothing here runs on a normal
+# branch push, so an ordinary merge can never publish.
+#
+# Publishing uses **npm trusted publishing (OIDC)** — no NPM_TOKEN secret and no
+# interactive 2FA. The one-time setup is on the npm side:
+#
+#   npmjs.com -> package "dsh-session-port" -> Settings -> Trusted Publishers
+#     Publisher:       GitHub Actions
+#     Organization/user: mswinandmc
+#     Repository:      dsh-session-port
+#     Workflow name:   release.yml      (this file's filename — npm matches it)
+#     Environment:     (leave empty)
+#
+# Re-running an already-published tag is safe: the publish step is skipped when
+# the registry already has that version, and the GitHub Release step is
+# idempotent. That is what makes backfilling old tags possible.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write # create the GitHub Release
+  id-token: write # npm trusted publishing: short-lived OIDC credential
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: publish ${{ github.ref_name }} to npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: 'https://registry.npmjs.org'
+
+      # Trusted publishing needs npm >= 11.5.
+      - name: upgrade npm for OIDC support
+        run: npm install -g npm@latest
+
+      - name: tag must match package.json version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$VERSION" != "$TAG" ]; then
+            echo "::error::tag v$TAG does not match package.json version $VERSION"
+            exit 1
+          fi
+          echo "releasing $VERSION"
+
+      - name: manifest + Harness contract preflight
+        run: node scripts/check-manifest.mjs
+
+      - name: unit tests (format, host, client)
+        run: npm test
+
+      - name: ZIP interoperability tests
+        run: npm run test:zip
+
+      # A prerelease tag (v0.2.0-beta.1) publishes under the `beta` dist-tag and
+      # never moves `latest`, so a test build cannot silently reach every user.
+      - name: choose the npm dist-tag
+        id: channel
+        shell: bash
+        run: |
+          case "${GITHUB_REF_NAME#v}" in
+            *-*) echo "dist=beta"   >> "$GITHUB_OUTPUT"; echo "pre=true"  >> "$GITHUB_OUTPUT" ;;
+            *)   echo "dist=latest" >> "$GITHUB_OUTPUT"; echo "pre=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: skip when this version is already published
+        id: published
+        shell: bash
+        run: |
+          if npm view "dsh-session-port@${GITHUB_REF_NAME#v}" version >/dev/null 2>&1; then
+            echo "already on npm — will only create the GitHub Release"
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: publish to npm (trusted publishing, no token)
+        if: steps.published.outputs.published != 'true'
+        run: npm publish --access public --tag ${{ steps.channel.outputs.dist }}
+
+      - name: create GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "GitHub Release $GITHUB_REF_NAME already exists"
+            exit 0
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --title "dsh-session-port ${GITHUB_REF_NAME#v}" \
+            --generate-notes \
+            ${{ steps.channel.outputs.pre == 'true' && '--prerelease' || '' }} \
+            --notes "npm: https://www.npmjs.com/package/dsh-session-port/v/${GITHUB_REF_NAME#v} · dist-tag: ${{ steps.channel.outputs.dist }}"
