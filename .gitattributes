@@ -1,0 +1,16 @@
+# Repository-wide line-ending policy.
+#
+# Git for Windows defaults to core.autocrlf=true, which rewrites text files to
+# CRLF on checkout. That breaks this repository two ways:
+#   - test/fixtures/** must stay byte-identical to what the committed ZIP
+#     fixtures contain (the ZIP tests compare archive bytes against the source
+#     files), and
+#   - the plugin ships JavaScript read by Node and a browser: LF everywhere.
+#
+# So: normalize every text file to LF in the repository, and treat fixture
+# directories as binary content that git must not touch.
+* text=auto eol=lf
+*.zip binary
+*.png binary
+*.zst binary
+test/fixtures/** -text
