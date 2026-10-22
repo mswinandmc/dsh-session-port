@@ -1,5 +1,6 @@
 node_modules/
 npm-debug.log*
 *.tgz
+.npmrc
 .DS_Store
 Thumbs.db
