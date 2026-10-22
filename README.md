@@ -9,12 +9,40 @@
 
 ## 安装
 
-- 已发布到 npm：`dsh-session-port`。在 DSH 的「设置 → 插件」里安装该 npm 包，或由 Harness 的
-  Plugin Manager 以 bundle 方式安装它（bundle 名同为 `dsh-session-port`）。
-- 从本仓库本地安装：把仓库目录作为 bundle 交给 Plugin Manager 安装即可（目录内的
-  `cordis.patch.yml` 会插入 `dsh-session-port` 行）。
+已发布到 npm 与 GitHub。任选一种方式；`--profile` 后面换成主人自己的 profile
+名（桌面版是 `desktop`，Web 版常见 `web`）。
 
-安装后**刷新一次页面**，标题栏右侧出现导出按钮、侧边栏底部出现导入按钮。
+**命令行（推荐）**
+
+```bash
+# 从 npm 安装（官方源；会自动写进 profile 的 bundles 列表）
+dsh plugin --profile desktop add dsh-session-port
+
+# 没装 dsh CLI 时用完整包名（npm 上那个 `dsh` 是同名旧包，不能用）
+npx @deepseek-ai/dsh plugin --profile desktop add dsh-session-port
+
+# 从 GitHub 仓库安装
+dsh plugin --profile desktop add github:mswinandmc/dsh-session-port
+
+# 从本地打包安装（在仓库目录 `npm pack` 后，把生成的 .tgz 装进 profile）
+npm pack
+dsh plugin --profile desktop add '<repo>\dsh-session-port-<version>.tgz'
+```
+
+装好后用这些命令查看/升级/卸载：
+
+```bash
+dsh plugin --profile desktop list --depth 0                 # 确认 dsh-session-port 在列表里
+dsh plugin --profile desktop update dsh-session-port        # 升级到 npm 最新版
+dsh plugin --profile desktop remove dsh-session-port        # 卸载
+```
+
+**图形界面**：DSH「设置 → 插件」里安装 npm 包 `dsh-session-port`（bundle 名同为
+`dsh-session-port`），或把本仓库目录交给 Plugin Manager 以 bundle 方式安装（目录里的
+`cordis.patch.yml` 会插入 `dsh-session-port` 行）。
+
+安装后**重启桌面版应用**（命令行安装的插件在下次启动时加载；已开着的页面需刷新），
+标题栏右侧出现导出按钮、侧边栏底部出现导入按钮。
 
 ## 用起来
 

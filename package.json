@@ -1,6 +1,6 @@
 {
   "name": "dsh-session-port",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "DeepSeek Harness 会话导入导出插件：把会话导出为压缩包，或把导出的会话作为新会话导入当前工作区，附件随会话一起搬运。",
   "type": "module",
   "main": "index.js",
