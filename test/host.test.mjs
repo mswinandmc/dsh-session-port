@@ -457,3 +457,44 @@ test('attachment references survive an export→import round trip with identical
   assert.deepEqual(target.committed.batches[0], events);
   assert.deepEqual(collectAttachmentRefs(target.committed.batches[0]).images.size, 1);
 });
+
+test('importSession re-points session-log delivery markers at the new session', async () => {
+  // A log exported from another session carries delivery-accepted markers that
+  // name that session. The current-format reader refuses such a log, so the
+  // importer must rewrite the markers before writing.
+  const source = {
+    type: 'session',
+    version: 4,
+    id: 'session-original',
+    createdAt: 1_700_000_000_000,
+    cwd,
+    isSeeded: false,
+  };
+  const events = [
+    { type: 'turn/start', seq: 0, time: 1_700_000_000_100, data: { turn: 0 } },
+    {
+      type: 'session-log-deepseek/delivery-accepted',
+      seq: 1,
+      time: 1_700_000_000_200,
+      data: { sessionId: 'session-original', sessionFormatVersion: 4, throughSeq: 0 },
+    },
+    {
+      type: 'turn/end',
+      seq: 2,
+      time: 1_700_000_000_300,
+      data: { turn: 0, reason: { kind: 'completed' } },
+    },
+  ];
+  const buffer = Buffer.from([JSON.stringify(source), ...events.map((event) => JSON.stringify(event))].join('\n') + '\n');
+  const target = fakeContext();
+  const result = await importSession(target.ctx, { buffer, cwd });
+  const written = target.committed.batches[0];
+  assert.equal(written[1].data.sessionId, result.sessionId);
+  assert.equal(written[1].data.throughSeq, 0);
+  assert.equal(written[1].data.sessionFormatVersion, 4);
+  // Everything else is preserved as imported.
+  assert.deepEqual(written[0], events[0]);
+  assert.deepEqual(written[2], events[2]);
+  // The source array is untouched.
+  assert.equal(events[1].data.sessionId, 'session-original');
+});

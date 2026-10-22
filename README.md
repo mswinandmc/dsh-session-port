@@ -30,6 +30,7 @@
 - **新建**，绝不覆盖或删除已有会话；
 - 落在**当前会话所在的工作区**（空闲时落在最近的工作区）；
 - 从原会话继承标题、完整对话与工具历史、模型/预设（预设在本机不存在时自动退回默认）；
+- 日志里指向原会话的内部标记（投递水位等）会自动改写成新会话，否则 DSH 会拒绝加载该会话的历史；
 - 子会话（`subagents/`）不随导入恢复，导入的是主会话本身。
 
 也可以用自然语言让本鲸帮忙，例如「把当前会话导出到 D 盘备份」——插件注册了 `session_port` 工具。
@@ -80,8 +81,8 @@
 
 ```bash
 cd dsh-session-port
-node --test test/format.test.mjs   # 12 项：JSONL 序列化/解析、附件引用、文件名
-node --test test/host.test.mjs     # 18 项：导出→导入往返、真实 zip 工具产物、失败路径
+node --test test/format.test.mjs   # 13 项：JSONL 序列化/解析、附件引用、投递标记、文件名
+node --test test/host.test.mjs     # 19 项：导出→导入往返、真实 zip 工具产物、投递标记改写、失败路径
 node --test test/client.test.mjs   #  6 项：浏览器半边注册与渲染路径（无浏览器沙箱）
 node --test test/zip.test.mjs      # 34 项：ZIP 读写、data descriptor 流式 zip、损坏输入
 ```

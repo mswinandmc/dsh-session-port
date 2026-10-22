@@ -16,6 +16,7 @@ import {
   parseAttachmentEntryName,
   parseSessionLog,
   rewriteAttachmentRefs,
+  rewriteDeliveryIdentity,
   sanitizeFileName,
   serializeSessionLog,
   sessionLogFileName,
@@ -250,4 +251,38 @@ test('isZipBuffer recognizes local headers and end-of-archive records only', () 
   assert.equal(isZipBuffer(Buffer.from([0x50, 0x4b, 0x05, 0x06])), true);
   assert.equal(isZipBuffer(Buffer.from('{"type":"session"}')), false);
   assert.equal(isZipBuffer(Buffer.alloc(0)), false);
+});
+
+test('rewriteDeliveryIdentity re-points active-generation delivery markers only', () => {
+  const marker = {
+    type: 'session-log-deepseek/delivery-accepted',
+    seq: 4,
+    time: 5,
+    data: { sessionId: 'session-source', sessionFormatVersion: 4, throughSeq: 3 },
+  };
+  const oldGeneration = {
+    type: 'session-log-deepseek/delivery-accepted',
+    seq: 5,
+    time: 6,
+    data: { sessionId: 'session-source', sessionFormatVersion: 3, throughSeq: 4 },
+  };
+  const other = { type: 'turn/start', seq: 0, time: 1, data: { turn: 0 } };
+  const events = [other, marker, oldGeneration];
+  const rewritten = rewriteDeliveryIdentity(events, 'session-copy', 4);
+  assert.equal(rewritten.length, 3);
+  assert.equal(rewritten[1].data.sessionId, 'session-copy');
+  assert.equal(rewritten[1].data.throughSeq, 3);
+  assert.equal(rewritten[1].data.sessionFormatVersion, 4);
+  // Markers of another generation are ignored by the reader and stay untouched.
+  assert.equal(rewritten[2].data.sessionId, 'session-source');
+  // Untouched events keep their identity.
+  assert.equal(rewritten[0], other);
+  // Input stays pristine.
+  assert.equal(events[1].data.sessionId, 'session-source');
+  // Already-pointing markers do not force a copy.
+  const alreadyOurs = [{ ...marker, data: { ...marker.data, sessionId: 'session-copy' } }];
+  assert.equal(rewriteDeliveryIdentity(alreadyOurs, 'session-copy', 4), alreadyOurs);
+  // No marker to rewrite -> the exact same array comes back.
+  const unchanged = [other];
+  assert.equal(rewriteDeliveryIdentity(unchanged, 'session-copy', 4), unchanged);
 });
