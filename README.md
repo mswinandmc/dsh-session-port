@@ -9,7 +9,7 @@
 
 ## 安装
 
-已发布到 npm 与 GitHub。任选一种方式；`--profile` 后面换成主人自己的 profile
+已发布到 npm 与 GitHub。任选一种方式；`--profile` 后面换成自己的 profile
 名（桌面版是 `desktop`，Web 版常见 `web`）。
 
 **命令行（推荐）**
