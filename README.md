@@ -9,40 +9,46 @@
 
 ## 安装
 
-已发布到 npm 与 GitHub。任选一种方式；`--profile` 后面换成自己的 profile
-名（桌面版是 `desktop`，Web 版常见 `web`）。
+已发布到 npm 与 GitHub。安装方式取决于部署形态：
 
-**命令行（推荐）**
+### 桌面版（DeepSeek Harness Desktop）——图形界面
+
+桌面版不提供 `dsh` 命令行，插件在设置里安装：
+
+1. 打开「**设置 → 插件**」，在插件列表或插件市场里找到 `dsh-session-port` 并安装
+   （bundle 名同为 `dsh-session-port`；已收录到 dshmarket 后可直接在市场里搜到）；
+2. 安装后**重启桌面版应用**（或刷新已打开的页面）。
+
+### Web / CLI 部署——命令行
+
+自建 `dsh web`、CLI 或其它非桌面部署才有 `dsh` 命令；`--profile` 换成实际 profile
+名（常见 `web`）。**桌面版用户请用上面的图形界面方式，这一段不适用。**
 
 ```bash
 # 从 npm 安装（官方源；会自动写进 profile 的 bundles 列表）
-dsh plugin --profile desktop add dsh-session-port
+dsh plugin --profile web add dsh-session-port
 
 # 没装 dsh CLI 时用完整包名（npm 上那个 `dsh` 是同名旧包，不能用）
-npx @deepseek-ai/dsh plugin --profile desktop add dsh-session-port
+npx @deepseek-ai/dsh plugin --profile web add dsh-session-port
 
 # 从 GitHub 仓库安装
-dsh plugin --profile desktop add github:mswinandmc/dsh-session-port
+dsh plugin --profile web add github:mswinandmc/dsh-session-port
 
 # 从本地打包安装（在仓库目录 `npm pack` 后，把生成的 .tgz 装进 profile）
 npm pack
-dsh plugin --profile desktop add '<repo>\dsh-session-port-<version>.tgz'
+dsh plugin --profile web add '<repo>/dsh-session-port-<version>.tgz'
 ```
 
 装好后用这些命令查看/升级/卸载：
 
 ```bash
-dsh plugin --profile desktop list --depth 0                 # 确认 dsh-session-port 在列表里
-dsh plugin --profile desktop update dsh-session-port        # 升级到 npm 最新版
-dsh plugin --profile desktop remove dsh-session-port        # 卸载
+dsh plugin --profile web list --depth 0                 # 确认 dsh-session-port 在列表里
+dsh plugin --profile web update dsh-session-port        # 升级到 npm 最新版
+dsh plugin --profile web remove dsh-session-port        # 卸载
 ```
 
-**图形界面**：DSH「设置 → 插件」里安装 npm 包 `dsh-session-port`（bundle 名同为
-`dsh-session-port`），或把本仓库目录交给 Plugin Manager 以 bundle 方式安装（目录里的
-`cordis.patch.yml` 会插入 `dsh-session-port` 行）。
-
-安装后**重启桌面版应用**（命令行安装的插件在下次启动时加载；已开着的页面需刷新），
-标题栏右侧出现导出按钮、侧边栏底部出现导入按钮。
+装好后**重启 dsh 服务**（或刷新已打开的页面），标题栏右侧出现导出按钮、
+侧边栏底部出现导入按钮。
 
 ## 用起来
 
