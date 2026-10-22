@@ -68,9 +68,3 @@ npm publish --access public
 预发布版本需要显式 dist-tag：`npm publish --tag beta`。手动发布不会自动创建 GitHub
 Release，需要另建；发布后请确认 registry 上的版本与 `package.json` 一致。
 
-## 市场收录
-
-插件收录在外部目录仓库 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)：
-在该仓库 `data/plugins/` 下新增一个 `<owner>__<repo>.yml` 文件并开 PR。合并后网站与
-dshmarket 自动更新。条目只写 `url`、`name`、`category` 与双语 `description`，不要手写
-`npm:` 或编辑生成的 README。
