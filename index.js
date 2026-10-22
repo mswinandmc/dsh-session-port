@@ -72,35 +72,43 @@ function resolveSettings(config) {
 }
 
 /**
- * Register the browser routes when this deployment serves one.
- * `webServer` and `connection` are optional: a headless deployment keeps the
- * tool and simply has no browser face.
+ * Register the browser routes once the optional web carrier is up.
+ *
+ * `webServer` and `connection` are optional services: a headless deployment
+ * keeps the tool and simply has no browser face. They are also not guaranteed
+ * to be initialized when this plugin's own fiber applies during a cold boot —
+ * the web carrier initializes asynchronously, so a plain `ctx.get()` at apply
+ * time can observe them as absent (this regressed the routes on the first
+ * restart after installation). `ctx.inject()` re-runs the registration when
+ * both become available instead, and owns its disposal with the plugin.
  * @param {object} ctx - the plugin context.
  * @param {object} settings - resolved settings.
  */
 function registerRoutes(ctx, settings) {
-  const webServer = ctx.get('webServer');
-  const connection = ctx.get('connection');
-  if (webServer === undefined || connection === undefined) return;
-  ctx.effect(
-    () =>
-      webServer.register({
-        kind: 'prefix',
-        path: ROUTE_PREFIX,
-        handler: (req, res) => {
-          dispatchRequest(ctx, settings, connection, req, res).catch((error) => {
-            // `dispatchRequest` already answers every expected failure; this is
-            // the last resort so a rejection never leaves a socket hanging.
-            try {
-              sendJson(res, 500, { ok: false, code: 'internal', message: errorText(error) });
-            } catch {
-              res.destroy();
-            }
-          });
-        },
-      }),
-    'session-port: browser routes',
-  );
+  ctx.inject(['webServer', 'connection'], (webCtx) => {
+    const webServer = webCtx.get('webServer');
+    const connection = webCtx.get('connection');
+    if (webServer === undefined || connection === undefined) return;
+    webCtx.effect(
+      () =>
+        webServer.register({
+          kind: 'prefix',
+          path: ROUTE_PREFIX,
+          handler: (req, res) => {
+            dispatchRequest(ctx, settings, connection, req, res).catch((error) => {
+              // `dispatchRequest` already answers every expected failure; this is
+              // the last resort so a rejection never leaves a socket hanging.
+              try {
+                sendJson(res, 500, { ok: false, code: 'internal', message: errorText(error) });
+              } catch {
+                res.destroy();
+              }
+            });
+          },
+        }),
+      'session-port: browser routes',
+    );
+  });
 }
 
 /**
