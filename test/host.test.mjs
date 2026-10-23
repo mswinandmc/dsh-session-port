@@ -483,6 +483,72 @@ test('importSession attaches the new session to the resolved workspace', async (
   assert.deepEqual(attached, [result.sessionId]);
 });
 
+test('importSession reports a workspace it could not join instead of dropping it silently', async () => {
+  const workspaceRegistry = {
+    get: () => undefined,
+    async resolveByPath() {
+      return {
+        id: 'workspace-broken',
+        async attachSession() {
+          throw new Error('attach denied');
+        },
+      };
+    },
+  };
+  const target = fakeContext({ workspaceRegistry });
+  const result = await importSession(target.ctx, {
+    buffer: readFileSync(join(fixtures, 'zip-src', 'session.v4.jsonl')),
+    cwd,
+  });
+  assert.equal(result.workspaceId, undefined);
+  assert.ok(
+    result.warnings.some(
+      (warning) => warning.includes('没能加入工作区 workspace-broken') && warning.includes('attach denied'),
+    ),
+    `warnings: ${result.warnings.join(' | ')}`,
+  );
+});
+
+test('importSession warns when the requested workspace is gone', async () => {
+  const workspaceRegistry = {
+    get: () => undefined,
+    async resolveByPath() {
+      return undefined;
+    },
+  };
+  const target = fakeContext({ workspaceRegistry });
+  const result = await importSession(target.ctx, {
+    buffer: readFileSync(join(fixtures, 'zip-src', 'session.v4.jsonl')),
+    cwd,
+    workspaceId: 'workspace-gone',
+  });
+  assert.equal(result.workspaceId, undefined);
+  assert.ok(
+    result.warnings.some((warning) => warning.includes('找不到工作区 workspace-gone')),
+    `warnings: ${result.warnings.join(' | ')}`,
+  );
+});
+
+test('importSession warns when it falls back to a different workspace', async () => {
+  const workspaceRegistry = {
+    get: () => undefined,
+    async resolveByPath() {
+      return { id: 'workspace-other', async attachSession() {} };
+    },
+  };
+  const target = fakeContext({ workspaceRegistry });
+  const result = await importSession(target.ctx, {
+    buffer: readFileSync(join(fixtures, 'zip-src', 'session.v4.jsonl')),
+    cwd,
+    workspaceId: 'workspace-gone',
+  });
+  assert.equal(result.workspaceId, 'workspace-other');
+  assert.ok(
+    result.warnings.some((warning) => warning.includes('找不到请求的工作区 workspace-gone')),
+    `warnings: ${result.warnings.join(' | ')}`,
+  );
+});
+
 test('importSession falls back to the working-directory default when the source cwd is gone', async () => {
   const missingCwd = join(cwd, '__directory-that-does-not-exist__');
   const log = {
