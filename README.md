@@ -94,6 +94,8 @@ dsh plugin --profile web remove dsh-session-port        # 卸载
   且每条数据的实际解压大小必须与压缩包里声明的一致；超出或对不上按「ZIP 文件无法解析」拒绝。
 - 导入只恢复主会话；子会话、会话收藏/置顶/归档等**列表状态**不迁移（子会话日志仍在压缩包里，可另行取用）。
 - 会话的 `cwd` 以当前工作区为准；原目录在本机不存在时不会被记录。
+- **导出是流式的**：归档逐条目写出，文件附件直接从磁盘流进压缩包，不会把整包和全部附件同时驻留内存；
+  代价是下载/写出中途失败时得到的是不完整文件（浏览器下载会丢弃，工具写出会删掉半成品）。
 
 ## 配置（`cordis.patch.yml` 的插件行）
 
@@ -112,11 +114,16 @@ dsh plugin --profile web remove dsh-session-port        # 卸载
 - 宿主端 `index.js`：`/session-port/{info,export,import}` 认证路由 + `session_port` 工具；
   两个入口调用 `lib/host.js` 里的同一组实现，所以格式与失败语义不会分叉。
 - `lib/host.js`：导出走 `sessionQuery.readSession`（与自带导出同一份已校验视图），并用
-  `traceSession` 把每个子会话按 `subagents/<id>/` 写进同一个压缩包；
-  导入通过 `sessionPersistence.create → append → flush → close` 落盘，再挂到工作区，
+  `traceSession` 把每个子会话按 `subagents/<id>/` 写进同一个压缩包；`openSessionExport`
+  先解析出下载名/事件数/预检告警与附件计划，再按条目流式写包（浏览器路由和 agent 工具共用），
+  `writeExportFile` 直接流到磁盘、失败时删掉半成品。导入通过
+  `sessionPersistence.create → append → flush → close` 落盘，再挂到工作区，
   最后用 `readSession` 读回校验一次。
 - `lib/format.js`：纯函数（JSONL 序列化/解析、附件引用收集与改写、文件名清洗），有单测。
-- `lib/zip.js`：无依赖 ZIP 读写（基于 `node:zlib`），有单测。
+- `lib/zip.js`：无依赖 ZIP 读写（基于 `node:zlib`；读取带解压上限，写入支持增量流式 + 背压，
+  流式条目的字节从磁盘/服务直接进入压缩包），有单测。
+- `lib/attachments.js`：把附件引用解析成「打开器」，导出时一次只读一个附件；本地存储的文件
+  以流的形式写入压缩包，读取失败在写入该条目之前降级为告警。
 - `client.js`：没有 `@deepseek-ai/*` 运行时依赖的客户端半边，只用 `react` 与宿主主题变量。
   导入入口注册成一行全局面板（`main` 键 + `sidebar.panellist` 行），所以侧栏里紧贴
   「插件」下方、并与「插件 / 日程」一样是一行导航；点开是 `session-port-import` 导入面板。
