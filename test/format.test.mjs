@@ -163,11 +163,33 @@ test('validateEvents enforces contiguous seq and known vocabulary', () => {
 test('attachment refs are collected once per id and classified by shape', () => {
   const refs = collectAttachmentRefs(events);
   assert.deepEqual([...refs.images.keys()], ['sha256:aaaa']);
-  assert.deepEqual([...refs.files.keys()], ['sha256:bbbb']);
-  // Duplicates across events dedupe by attachment id.
+  // Files dedupe on content id + stored display name, like the shipped exporter.
+  assert.deepEqual([...refs.files.keys()], ['sha256:bbbb\u0000notes.txt']);
+  // Duplicates across events dedupe by attachment id (and name, for files).
   const twice = collectAttachmentRefs([...events, ...events]);
   assert.equal(twice.images.size, 1);
   assert.equal(twice.files.size, 1);
+  // One digest referenced under two names keeps both references: the archive
+  // carries one entry per name, exactly like DSH's own export.
+  const aliased = collectAttachmentRefs([
+    {
+      type: 'user/message',
+      seq: 0,
+      time: 1,
+      data: { content: [{ type: 'file', attachment: fileRef }] },
+    },
+    {
+      type: 'user/message',
+      seq: 1,
+      time: 2,
+      data: { content: [{ type: 'file', attachment: { ...fileRef, name: '副本.txt' } }] },
+    },
+  ]);
+  assert.equal(aliased.files.size, 2);
+  assert.deepEqual(
+    [...aliased.files.values()].map((ref) => ref.name).sort(),
+    ['notes.txt', '副本.txt'].sort(),
+  );
   // An unknown attachment-like object with the wrong shape is not a reference.
   const unrelated = collectAttachmentRefs([
     { type: 'x', seq: 0, time: 1, data: { attachmentId: 'opaque', unrelated: true } },

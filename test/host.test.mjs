@@ -699,8 +699,53 @@ test('file attachment names survive an export→import round trip verbatim', asy
   assert.equal(result.verified, true);
   assert.equal(stored.length, 1);
   assert.equal(stored[0].name, fileName);
-  const importedRef = collectAttachmentRefs(target.committed.batches[0]).files.get(`sha256:${fileDigest}`);
+  const importedRef = [...collectAttachmentRefs(target.committed.batches[0]).files.values()].find(
+    (ref) => ref.attachmentId === `sha256:${fileDigest}`,
+  );
   assert.equal(importedRef.name, fileName);
+});
+
+test('export keeps one archive entry per name when a digest has two names', async () => {
+  const fileDigest = 'e'.repeat(64);
+  const refA = { attachmentId: `sha256:${fileDigest}`, name: '原始名.txt', bytes: 7 };
+  const refB = { ...refA, name: '别名副本.txt' };
+  const aliasedEvents = [
+    { type: 'turn/start', seq: 0, time: 1, data: { turn: 0 } },
+    {
+      type: 'user/message',
+      seq: 1,
+      time: 2,
+      data: {
+        role: 'user',
+        id: 'm1',
+        source: { kind: 'user' },
+        content: [{ type: 'file', attachment: refA }],
+      },
+      surfaceOp: 'append',
+    },
+    {
+      type: 'user/message',
+      seq: 2,
+      time: 3,
+      data: {
+        role: 'user',
+        id: 'm2',
+        source: { kind: 'user' },
+        content: [{ type: 'file', attachment: refB }],
+      },
+      surfaceOp: 'append',
+    },
+    { type: 'turn/end', seq: 3, time: 4, data: { turn: 0, reason: { kind: 'completed' } } },
+  ];
+  const source = fakeContext({
+    readSession: async () => ({ session: header, inheritedEventCount: 0, events: aliasedEvents }),
+    attachments: { fileHostPath: () => join(fixtures, 'zip-src', 'session.v4.jsonl') },
+  });
+  const exported = await exportSession(source.ctx, { sessionId: header.id, includeDescendants: false });
+  assert.equal(exported.attachmentCount, 2);
+  const names = readZipEntries(exported.data).map((entry) => entry.name);
+  assert.ok(names.includes(`files/ee/${fileDigest}/原始名.txt`), `archive lacks 原始名.txt: ${names.join(', ')}`);
+  assert.ok(names.includes(`files/ee/${fileDigest}/别名副本.txt`), `archive lacks 别名副本.txt`);
 });
 
 test('importSession re-points session-log delivery markers at the new session', async () => {
