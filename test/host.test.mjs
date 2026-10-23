@@ -572,14 +572,27 @@ test('importSession refuses non-contiguous event logs before writing anything', 
 });
 
 test('writeExportFile writes the archive into the requested directory', async () => {
-  const { ctx } = fakeContext();
+  const { childHeader, childEvents } = subagentFixture();
+  const { ctx } = fakeContext({
+    traceSession: async () => ({
+      target: { header },
+      ancestors: [],
+      descendants: [{ session: { header: childHeader }, descendants: [] }],
+      complete: true,
+    }),
+    readSession: async (id) =>
+      id === header.id ? { session: header, inheritedEventCount: 0, events } : { session: childHeader, inheritedEventCount: 0, events: childEvents },
+  });
   const directory = mkdtempSync(join(tmpdir(), 'session-port-test-'));
   try {
     const written = await writeExportFile(ctx, { sessionId: header.id, directory });
     assert.equal(dirname(written.path), directory);
     assert.match(written.filename, /\.zip$/u);
+    // The tool result reports the tree it actually packed.
+    assert.equal(written.subagentCount, 1);
     const entries = readZipEntries(readFileSync(written.path));
     assert.ok(entries.some((entry) => entry.name === 'session.v4.jsonl'));
+    assert.ok(entries.some((entry) => entry.name === 'subagents/session-child-1/session.v4.jsonl'));
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
