@@ -548,6 +548,24 @@ test('importSession refuses files that are empty, oversized, foreign or invalid'
   assert.equal(DEFAULT_MAX_IMPORT_BYTES, 512 * 1024 * 1024);
 });
 
+test('importSession rejects an archive that declares more expansion than allowed', async () => {
+  const log = { type: 'session', version: 4, id: 'session-bomb', createdAt: 1, isSeeded: false };
+  const zip = writeZipEntries([
+    { name: 'session.v4.jsonl', data: Buffer.from(`${JSON.stringify(log)}\n`) },
+  ]);
+  // Patch the single central-directory entry to declare 1 GiB uncompressed: the
+  // reader's per-entry budget trips from the directory alone, before inflating.
+  const directoryOffset = zip.readUInt32LE(zip.length - 22 + 16);
+  zip.writeUInt32LE(0x40000000, directoryOffset + 24);
+  const target = fakeContext();
+  await assert.rejects(importSession(target.ctx, { buffer: zip }), (error) => {
+    assert.equal(error.code, 'invalid-zip');
+    assert.match(error.message, /压缩炸弹/u);
+    return true;
+  });
+  assert.equal(target.committed.headers.length, 0, '被拒绝的压缩包不得写入任何会话');
+});
+
 test('importSession refuses a format version the running build does not use', async () => {
   const log = { type: 'session', version: 3, id: 'session-v3', createdAt: 1, cwd, isSeeded: false };
   const target = fakeContext();

@@ -23,7 +23,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import * as zlib from 'node:zlib';
 
-import { crc32, readZipEntries, writeZipEntries } from '../lib/zip.js';
+import { ZIP_READ_LIMITS, crc32, readZipEntries, writeZipEntries } from '../lib/zip.js';
 
 const FIXTURE_ARCHIVE = new URL('./fixtures/compress-archive.zip', import.meta.url);
 const FIXTURE_SOURCE_ROOT = fileURLToPath(new URL('./fixtures/archive-src/', import.meta.url));
@@ -801,6 +801,61 @@ test('read: rejects a decompressed size mismatch', () => {
     copy.writeUInt32LE(FIRST_HEADER.uncompressedSize + 1, FIRST_HEADER.offset + 24);
   });
   assertZipError(() => readZipEntries(broken), 'SIZE_MISMATCH');
+});
+
+// ---------------------------------------------------------------------------
+// Decompression guards (zip bomb protection)
+// ---------------------------------------------------------------------------
+
+test('read: enforces entry-count, per-entry and total decompression limits', () => {
+  const twoEntries = writeZipEntries([
+    { name: 'a.txt', data: Buffer.from('a'.repeat(64)) },
+    { name: 'b.txt', data: Buffer.from('b'.repeat(64)) },
+  ]);
+  assert.equal(readZipEntries(twoEntries).length, 2, '默认限额下正常档案必须仍可读');
+  assertZipError(() => readZipEntries(twoEntries, { maxEntries: 1 }), 'TOO_MANY_ENTRIES', /压缩炸弹/u);
+  assertZipError(() => readZipEntries(twoEntries, { maxEntryBytes: 32 }), 'ENTRY_TOO_LARGE', /压缩炸弹/u);
+  assertZipError(
+    () => readZipEntries(twoEntries, { maxEntryBytes: 100, maxTotalBytes: 100 }),
+    'ARCHIVE_TOO_LARGE',
+    /压缩炸弹/u,
+  );
+  // A nonsensical budget is rejected instead of silently reading with another one.
+  assertZipError(() => readZipEntries(twoEntries, { maxEntryBytes: 0 }), 'INVALID_ARGUMENT', /maxEntryBytes/u);
+  assertZipError(() => readZipEntries(twoEntries, { maxTotalBytes: 1.5 }), 'INVALID_ARGUMENT');
+});
+
+test('read: refuses a declared size beyond the default budget before inflating', () => {
+  const bomb = copyWithPatches(CORRUPTION_ZIP, (copy) => {
+    // 1 GiB declared for a tiny payload: the default 512 MiB per-entry cap
+    // trips from the central directory alone, before any inflate work.
+    copy.writeUInt32LE(0x40000000, FIRST_HEADER.offset + 24);
+  });
+  assertZipError(() => readZipEntries(bomb), 'ENTRY_TOO_LARGE', /压缩炸弹/u);
+});
+
+test('read: a payload that inflates past its declared size cannot expand', () => {
+  const lying = copyWithPatches(CORRUPTION_ZIP, (copy) => {
+    // Declare 8 bytes while the deflate payload inflates to the real 34-byte
+    // content: bounded inflate must stop at the declared size.
+    copy.writeUInt32LE(8, FIRST_HEADER.offset + 24);
+  });
+  assertZipError(() => readZipEntries(lying), 'SIZE_MISMATCH', /伪造|压缩炸弹/u);
+
+  const emptyButNotEmpty = copyWithPatches(CORRUPTION_ZIP, (copy) => {
+    // A zero declared size must not read as "no output bound".
+    copy.writeUInt32LE(0, FIRST_HEADER.offset + 24);
+  });
+  assertZipError(() => readZipEntries(emptyButNotEmpty), 'SIZE_MISMATCH');
+});
+
+test('read: exposes the default decompression budget', () => {
+  assert.deepEqual(ZIP_READ_LIMITS, {
+    maxEntries: 20_000,
+    maxEntryBytes: 512 * 1024 * 1024,
+    maxTotalBytes: 2 * 1024 * 1024 * 1024,
+  });
+  assert.ok(Object.isFrozen(ZIP_READ_LIMITS));
 });
 
 test('read: rejects an unsupported compression method', () => {
