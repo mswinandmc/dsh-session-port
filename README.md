@@ -48,7 +48,7 @@ dsh plugin --profile web remove dsh-session-port        # 卸载
 ```
 
 装好后**重启 dsh 服务**（或刷新已打开的页面），标题栏右侧出现导出按钮、
-侧边栏底部出现导入按钮。
+左侧栏全局导航里「插件」下方出现一行「导入会话」。
 
 ## 用起来
 
@@ -57,7 +57,7 @@ dsh plugin --profile web remove dsh-session-port        # 卸载
 | 想做的事 | 操作 |
 | --- | --- |
 | 导出正在看的会话 | 打开会话 → 标题栏右侧的「导出」图标（↓）→ 浏览器下载 `<标题>-<会话 id>.zip` |
-| 导入一个会话 | 左侧栏底部的「导入会话」图标（↑）→ 选择 `.zip` 或 `.jsonl` → 自动导入并打开新会话 |
+| 导入一个会话 | 左侧栏「插件」下方那一行「导入会话」（↑）→ 打开导入面板 → 把 `.zip` / `.jsonl` 拖进去或点「选择文件…」→ 导入完成后点「打开会话」 |
 
 导入的会话：
 
@@ -110,14 +110,16 @@ dsh plugin --profile web remove dsh-session-port        # 卸载
 - `lib/format.js`：纯函数（JSONL 序列化/解析、附件引用收集与改写、文件名清洗），有单测。
 - `lib/zip.js`：无依赖 ZIP 读写（基于 `node:zlib`），有单测。
 - `client.js`：没有 `@deepseek-ai/*` 运行时依赖的客户端半边，只用 `react` 与宿主主题变量。
+  导入入口注册成一行全局面板（`main` 键 + `sidebar.panellist` 行），所以侧栏里紧贴
+  「插件」下方、并与「插件 / 日程」一样是一行导航；点开是 `session-port-import` 导入面板。
 
 ## 验证
 
 ```bash
 cd dsh-session-port
 node --test test/format.test.mjs   # 13 项：JSONL 序列化/解析、附件引用、投递标记、文件名
-node --test test/host.test.mjs     # 19 项：导出→导入往返、真实 zip 工具产物、投递标记改写、失败路径
-node --test test/client.test.mjs   #  6 项：浏览器半边注册与渲染路径（无浏览器沙箱）
+node --test test/host.test.mjs     # 20 项：导出→导入往返、真实 zip 工具产物、投递标记改写、标题回退、失败路径
+node --test test/client.test.mjs   #  7 项：浏览器半边注册（面板行 + 插件行）、导入面板渲染（无浏览器沙箱）
 node --test test/zip.test.mjs      # 34 项：ZIP 读写、data descriptor 流式 zip、损坏输入
 ```
 
@@ -126,5 +128,6 @@ node --test test/zip.test.mjs      # 34 项：ZIP 读写、data descriptor 流�
 - 用插件工具导出当前会话（948 条事件）→ 独立 Python `zipfile` 校验压缩包结构、JSONL 头与事件连续性；
 - 用插件工具把该压缩包导入回当前工作区 → 新会话落盘（`sessions/--D-hyw--/<新 id>/session.v4.jsonl.zstd`，948 条事件、序号连续），并自动加入 `D:\hyw` 工作区的会话列表；
 - 浏览器路由已注册并通过 Connection 信任栅栏（未认证请求全部 401）；
-- 界面按钮的渲染与点击需刷新页面后点击验证（本会话无浏览器控制能力，未做视觉验收）。
+- 在真实桌面版页面里验收：侧栏全局导航order 依次为 `插件(0) → 导入会话(5) → 日程(10)`，
+  点行打开导入面板、拖入 `.zip` 后显示「导入完成」并可一键打开新会话（0.2.0 起入口从脚底挪到此处）。
 

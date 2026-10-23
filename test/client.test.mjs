@@ -112,7 +112,7 @@ test('bundle id and inject list match the package contract', () => {
   assert.equal(typeof plugin.apply, 'function');
 });
 
-test('apply registers the dictionaries and both slot entries', () => {
+test('apply registers the dictionaries, the export action, and the import row', () => {
   const { loaded } = loadBundle();
   const plugin = loaded.factory(() => fakeReact());
   const { ctx, dictionaries, registrations, injections } = fakeContext();
@@ -123,20 +123,32 @@ test('apply registers the dictionaries and both slot entries', () => {
   assert.ok(Object.keys(dictionaries[0].dicts.zh).length > 5, 'zh dictionary has entries');
   assert.deepEqual(Object.keys(dictionaries[0].dicts.zh), Object.keys(dictionaries[0].dicts.en));
 
-  assert.deepEqual(injections, ['conversation.session.header.utilities', 'sidebar.footer.action']);
-  assert.equal(registrations.length, 2);
+  assert.deepEqual(injections, ['conversation.session.header.utilities', 'main', 'sidebar.panellist']);
+  assert.equal(registrations.length, 3);
+
   const exportEntry = registrations.find((entry) => entry.options.id === 'session-port-export');
-  const importEntry = registrations.find((entry) => entry.options.id === 'session-port-import');
   assert.ok(exportEntry !== undefined, 'export entry registered');
   assert.equal(exportEntry.options.name, 'conversation.session.header.utilities');
   assert.equal(exportEntry.options.locale, 'session-port');
-  assert.ok(importEntry !== undefined, 'import entry registered');
-  assert.equal(importEntry.options.name, 'sidebar.footer.action');
-  assert.equal(importEntry.options.locale, 'session-port');
-  assert.equal(typeof importEntry.options.inject, 'function');
-  const injected = importEntry.options.inject();
+
+  const panelEntry = registrations.find((entry) => entry.options.name === 'main');
+  assert.ok(panelEntry !== undefined, 'import panel registered');
+  assert.equal(panelEntry.options.key, 'session-port-import');
+  assert.equal(panelEntry.options.locale, 'session-port');
+  assert.equal(typeof panelEntry.options.inject, 'function');
+  const injected = panelEntry.options.inject();
   assert.equal(typeof injected.importArchive, 'function');
   assert.equal(typeof injected.openImported, 'function');
+
+  const rowEntry = registrations.find((entry) => entry.options.name === 'sidebar.panellist');
+  assert.ok(rowEntry !== undefined, 'sidebar row registered');
+  assert.equal(rowEntry.options.id, 'session-port-import');
+  assert.equal(rowEntry.options.order, 5, 'the row sits between 插件 (0) and 日程 (10)');
+  assert.equal(rowEntry.options.locale, 'session-port');
+  assert.equal(rowEntry.options.label(), '导入会话', 'row label falls back to the bundle dictionary');
+
+  // The footer seat is gone: the sidebar row is the panel's only door.
+  assert.equal(registrations.some((entry) => entry.options.name === 'sidebar.footer.action'), false);
 });
 
 test('the export component renders a labelled button without throwing', () => {
@@ -157,32 +169,70 @@ test('the export component renders a labelled button without throwing', () => {
   assert.equal(typeof button.args[1].onClick, 'function');
 });
 
-test('the import component renders wide and rail shapes, plus its hidden input', () => {
+/** Collect every string and every element inside one fake-React tree. */
+function walk(node, hits = { strings: [], elements: [] }) {
+  if (node === null || node === undefined || typeof node === 'boolean') return hits;
+  if (Array.isArray(node)) {
+    for (const child of node) walk(child, hits);
+    return hits;
+  }
+  if (typeof node === 'string') {
+    hits.strings.push(node);
+    return hits;
+  }
+  if (typeof node === 'object' && node.kind === 'element') {
+    hits.elements.push(node);
+    for (const child of node.args.slice(2)) walk(child, hits);
+  }
+  return hits;
+}
+
+test('the import panel renders a drop zone, a hidden input, and localized copy', () => {
   const { loaded } = loadBundle();
   const plugin = loaded.factory(() => fakeReact());
   const { ctx, registrations } = fakeContext();
   plugin.apply(ctx);
-  const importEntry = registrations.find((entry) => entry.options.id === 'session-port-import');
-  const injected = importEntry.options.inject();
+  const panelEntry = registrations.find((entry) => entry.options.name === 'main');
   const t = (key) => `t:${key}`;
+  const element = panelEntry.component({ t, importArchive: async () => ({}), openImported: async () => {} });
+  assert.equal(element.kind, 'element');
 
-  const wide = importEntry.component({ wide: true, t, ...injected });
-  assert.equal(wide.kind, 'element');
-  const button = wide.args[2];
-  const input = wide.args[3];
-  assert.equal(button.args[1].style.width, '100%');
-  // The wide footer shows the localized label beside the icon.
-  assert.equal(button.args[3].kind, 'element', 'label element present in wide mode');
-  assert.equal(button.args[3].args[0], 'span');
-  assert.equal(input.args[0], 'input');
+  const { strings, elements } = walk(element);
+  assert.ok(strings.includes('t:import.title'), 'panel title');
+  assert.ok(strings.includes('t:import.panelHint'), 'panel hint');
+  assert.ok(strings.includes('t:import.choose'), 'choose-file headline');
+
+  const input = elements.find((node) => node.args[0] === 'input');
+  assert.ok(input !== undefined, 'hidden file input present');
   assert.equal(input.args[1].type, 'file');
   assert.equal(input.args[1].accept.includes('.zip'), true);
+  assert.equal(input.args[1].style.display, 'none');
   assert.equal(typeof input.args[1].onChange, 'function');
 
-  const rail = importEntry.component({ wide: false, t, ...injected });
-  const railButton = rail.args[2];
-  assert.equal(railButton.args[1].style.width, undefined);
-  assert.equal(railButton.args[3], null, 'no label in rail mode');
+  const zone = elements.find((node) => node.args[1]?.['data-session-port-import'] === 'zone');
+  assert.ok(zone !== undefined, 'drop zone present');
+  assert.equal(zone.args[1].role, 'button');
+  assert.equal(zone.args[1].tabIndex, 0);
+  assert.equal(typeof zone.args[1].onClick, 'function');
+  assert.equal(typeof zone.args[1].onKeyDown, 'function');
+});
+
+test('the sidebar row renders the requested square glyph', () => {
+  const { loaded } = loadBundle();
+  const plugin = loaded.factory(() => fakeReact());
+  const { ctx, registrations } = fakeContext();
+  plugin.apply(ctx);
+  const rowEntry = registrations.find((entry) => entry.options.name === 'sidebar.panellist');
+  // The row owns a component, so the fake renderer stops at the Icon element and
+  // the icon is invoked explicitly with the row's presentation props.
+  const glyph = rowEntry.component({ size: 18, active: true });
+  assert.equal(typeof glyph.args[0], 'function', 'row renders the shared Icon component');
+  assert.equal(glyph.args[1].size, 18);
+  assert.equal(glyph.args[1].kind, 'import');
+  const svg = glyph.args[0](glyph.args[1]);
+  assert.equal(svg.args[0], 'svg');
+  assert.equal(svg.args[1].width, 18);
+  assert.equal(svg.args[1]['aria-hidden'], 'true');
 });
 
 test('the export component defaults its translator instead of crashing', () => {

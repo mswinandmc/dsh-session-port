@@ -8,9 +8,11 @@
  *  - `conversation.session.header.utilities` — an export button on the open
  *    session's header, next to the other session-scoped utilities; it downloads
  *    the archive the Host produces for that session.
- *  - `sidebar.footer.action` — an import button in the sidebar footer; it opens
- *    the file picker, uploads the chosen archive, then refreshes the session
- *    list and opens the new conversation.
+ *  - `main` (key `session-port-import`) + `sidebar.panellist` — an "导入会话" row
+ *    in the sidebar's global-panel nav, directly below the plugins row, opening
+ *    an import page: drop an archive or pick one, watch the upload, then open the
+ *    new conversation. The two registrations are one seat: the sidebar row is the
+ *    panel's door, and the panel is the row's page.
  *
  * Both surfaces talk to the Host through the authenticated, Connection-fenced
  * `/session-port/*` routes, so they share one implementation with the agent
@@ -31,6 +33,8 @@ window.__ModuleLoader__.load({
     const NS = 'session-port';
     /** Host route prefix owned by the Host half. */
     const ROUTE_PREFIX = '/session-port';
+    /** Main-panel id of the import page; the sidebar row reuses it as its list id. */
+    const PANEL_ID = 'session-port-import';
 
     // #region dictionaries
     const zh = {
@@ -44,6 +48,17 @@ window.__ModuleLoader__.load({
       'import.done': '已导入，正在打开…',
       'import.failed': '导入失败',
       'import.openFallback': '会话已导入。请在侧边栏会话列表中找到并打开它。',
+      'import.panelHint': '把会话压缩包（.zip）或会话日志（.jsonl）拖到这里，或者选择一个文件。',
+      'import.choose': '选择文件…',
+      'import.dropActive': '松开鼠标即可导入',
+      'import.working': '正在导入 {name}…',
+      'import.resultTitle': '导入完成',
+      'import.resultSession': '新会话：{id}',
+      'import.resultCounts': '{events} 条事件 · {attachments} 个附件',
+      'import.open': '打开会话',
+      'import.another': '再导一个',
+      'import.retry': '重新选择',
+      'import.note': '与 DSH 自带「下载会话日志」格式互通；导入只会新增会话，绝不覆盖已有会话。',
       'common.dismiss': '关闭',
       'common.note': '注意',
       'error.network': '无法连接 DSH 主机，请确认页面与主机的连接正常后重试。',
@@ -62,6 +77,17 @@ window.__ModuleLoader__.load({
       'import.done': 'Imported. Opening…',
       'import.failed': 'Import failed',
       'import.openFallback': 'The session was imported. Find and open it in the sidebar session list.',
+      'import.panelHint': 'Drop a session archive (.zip) or session log (.jsonl) here, or choose a file.',
+      'import.choose': 'Choose file…',
+      'import.dropActive': 'Release to import',
+      'import.working': 'Importing {name}…',
+      'import.resultTitle': 'Import complete',
+      'import.resultSession': 'New session: {id}',
+      'import.resultCounts': '{events} events · {attachments} attachments',
+      'import.open': 'Open session',
+      'import.another': 'Import another',
+      'import.retry': 'Choose again',
+      'import.note': 'Interoperable with DSH\'s own session-log export. Import only ever adds a session; it never overwrites one.',
       'common.dismiss': 'Dismiss',
       'common.note': 'Note',
       'error.network': 'Cannot reach the DSH host. Check the page connection and try again.',
@@ -72,17 +98,23 @@ window.__ModuleLoader__.load({
     // #endregion
 
     // #region theme tokens
-    // Only host theme tokens: the two buttons and their popover follow light/dark
-    // switching without any literal colour.
+    // Only host theme tokens: the buttons, the popover and the import panel follow
+    // light/dark switching without any literal colour.
     const T = {
       labelPrimary: 'var(--dsw-alias-label-primary)',
       labelSecondary: 'var(--dsw-alias-label-secondary)',
-      labelTertiary: 'var(--dsw-alias-label-tertiary)',
+      labelTertiary: 'var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary))',
+      bgBase: 'var(--dsw-alias-bg-base, Canvas)',
+      bgLayer1: 'var(--dsw-alias-bg-layer-1, Canvas)',
+      bgLayer2: 'var(--dsw-alias-bg-layer-2, Canvas)',
       border: 'var(--dsw-alias-border-l2)',
+      borderL1: 'var(--dsw-alias-border-l1, var(--dsw-alias-border-l2))',
+      brand: 'var(--dsw-alias-brand-primary, var(--dsw-alias-state-business-primary))',
       hoverFill: 'var(--dsw-alias-interactive-bg-hover, rgba(127, 127, 127, 0.12))',
       panelFill: 'var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-1, Canvas))',
       error: 'var(--dsw-alias-state-error-primary)',
       success: 'var(--dsw-alias-state-success-primary)',
+      warn: 'var(--dsw-alias-state-warn-primary, var(--dsw-alias-label-secondary))',
       business: 'var(--dsw-alias-state-business-primary, var(--dsw-alias-label-primary))',
       focusRing:
         'var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary))',
@@ -90,18 +122,19 @@ window.__ModuleLoader__.load({
       radiusLg: 'var(--dsw-radius-lg, 10px)',
       shadow: 'var(--dsw-shadow-md, 0 8px 24px rgba(0, 0, 0, 0.18))',
       font: 'var(--dsw-font-family, inherit)',
+      mono: 'var(--dsw-font-family-mono, ui-monospace, SFMono-Regular, Consolas, monospace)',
     };
     // #endregion
 
     // #region icons
-    /** Inline 16px icon; artwork is our own. */
-    function Icon({ kind }) {
+    /** Inline square icon; artwork is our own. `size` matches the panel row's request. */
+    function Icon({ kind, size = 16 }) {
       return h(
         'svg',
         {
           viewBox: '0 0 16 16',
-          width: 16,
-          height: 16,
+          width: size,
+          height: size,
           'aria-hidden': 'true',
           focusable: 'false',
           style: { display: 'block' },
@@ -153,6 +186,9 @@ window.__ModuleLoader__.load({
       if (error !== null && typeof error === 'object' && typeof error.httpStatus === 'number') {
         return t('error.http', { status: error.httpStatus });
       }
+      // `fetch` rejects with a TypeError when the Host is unreachable; the other
+      // paths below carry real diagnostics and are better than a generic line.
+      if (error instanceof TypeError) return t('error.network');
       if (error instanceof Error && error.message.trim() !== '') return error.message.trim();
       return t('error.unknown');
     }
@@ -198,7 +234,7 @@ window.__ModuleLoader__.load({
       }
     }
 
-    /** The wide/narrow sidebar footer action button shape, shared by both surfaces. */
+    /** The header utility button shape the export action uses. */
     function useIconButton() {
       const [hovered, setHovered] = React.useState(false);
       const [focused, setFocused] = React.useState(false);
@@ -328,10 +364,6 @@ window.__ModuleLoader__.load({
       );
     }
 
-    /** A label row for the sidebar footer, shown only while the sidebar is wide. */
-    function footerLabel(text) {
-      return h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis' } }, text);
-    }
     // #endregion
 
     // #region export surface
@@ -423,121 +455,302 @@ window.__ModuleLoader__.load({
     }
     // #endregion
 
-    // #region import surface
+    // #region import panel
 
     /**
-     * Import one archive chosen in the sidebar footer, then reveal the session.
-     * @param {{wide?: boolean, t: Function, importArchive: Function, openImported: Function, onNeedHint?: Function}} props - slot props plus injected operations.
+     * Import one archive in the main column: drop a file or browse for one, then
+     * reveal the new session. This page is the owner of the sidebar "导入会话"
+     * row, registered as the main-slot key `session-port-import`.
+     * @param {{t: Function, importArchive: Function, openImported: Function}} props - slot props plus injected operations.
      */
-    function SessionImportAction({ wide, t, importArchive, openImported }) {
+    function SessionImportPanel({ t, importArchive, openImported }) {
       const tr = translatorOf(t);
       const [phase, setPhase] = React.useState('idle');
+      const [dragging, setDragging] = React.useState(false);
       const [message, setMessage] = React.useState('');
       const [filename, setFilename] = React.useState('');
       const [warnings, setWarnings] = React.useState([]);
-      const [panelOpen, setPanelOpen] = React.useState(false);
+      const [result, setResult] = React.useState(null);
+      const [opening, setOpening] = React.useState(false);
       const inputRef = React.useRef(null);
-      const buttonRef = React.useRef(null);
-      const button = useIconButton();
-      const label = tr('import.title');
       const busy = phase === 'busy';
 
       function pick() {
         if (busy) return;
-        setPanelOpen(false);
         inputRef.current?.click();
       }
 
-      async function onChange(event) {
-        const file = event.target.files?.[0];
-        event.target.value = '';
-        if (file === undefined) return;
+      async function accept(file) {
+        if (busy || file === undefined || file === null) return;
         if (file.size === 0) {
           setPhase('error');
           setMessage(tr('error.empty'));
-          setPanelOpen(true);
           return;
         }
         setFilename(file.name ?? '');
+        setWarnings([]);
+        setResult(null);
+        setMessage('');
+        setOpening(false);
         setPhase('busy');
-        setPanelOpen(true);
         try {
-          const result = await importArchive(file);
-          setWarnings(Array.isArray(result?.warnings) ? result.warnings : []);
+          const payload = await importArchive(file);
+          setResult(payload ?? null);
+          setWarnings(Array.isArray(payload?.warnings) ? payload.warnings : []);
           setPhase('done');
-          setMessage(tr('import.done'));
-          try {
-            await openImported(result.sessionId);
-          } catch (error) {
-            console.warn('session-port: imported session could not be opened automatically:', error);
-            setMessage(tr('import.openFallback'));
-          }
-          window.setTimeout(() => {
-            setPanelOpen(false);
-            setPhase('idle');
-            setMessage('');
-            setWarnings([]);
-          }, 3200);
         } catch (error) {
           setPhase('error');
           setMessage(errorMessageOf(error, tr));
         }
       }
 
-      const title = phase === 'error' ? tr('import.failed') : phase === 'done' ? tr('import.done') : label;
-      const lines = [];
-      if (phase === 'error') lines.push(message);
-      else if (phase === 'done') {
-        if (message !== '') lines.push(message);
-        for (const warning of warnings) lines.push(`${tr('common.note')}：${warning}`);
-      } else {
-        if (filename !== '') lines.push(filename);
-        lines.push(tr('import.hint'));
+      async function openResult() {
+        const sessionId = result?.sessionId;
+        if (typeof sessionId !== 'string' || sessionId === '' || opening) return;
+        setOpening(true);
+        setMessage('');
+        try {
+          await openImported(sessionId);
+        } catch (error) {
+          console.warn('session-port: imported session could not be opened:', error);
+          setMessage(tr('import.openFallback'));
+          setOpening(false);
+        }
       }
 
+      /** Accept a drag anywhere over the page, not only over the dashed zone. */
+      function onDragOver(event) {
+        event.preventDefault();
+        if (busy) return;
+        if (event.dataTransfer !== null) event.dataTransfer.dropEffect = 'copy';
+        setDragging(true);
+      }
+
+      function onDragLeave(event) {
+        const next = event.relatedTarget;
+        if (next !== null && next !== undefined && event.currentTarget.contains(next)) return;
+        setDragging(false);
+      }
+
+      function onDrop(event) {
+        event.preventDefault();
+        setDragging(false);
+        if (busy) return;
+        void accept(event.dataTransfer?.files?.[0]);
+      }
+
+      function onFiles(event) {
+        const file = event.target.files?.[0];
+        event.target.value = '';
+        void accept(file);
+      }
+
+      function reset() {
+        setPhase('idle');
+        setFilename('');
+        setMessage('');
+        setWarnings([]);
+        setResult(null);
+        setOpening(false);
+      }
+
+      const primaryButton = {
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 6,
+        height: 32,
+        padding: '0 14px',
+        border: 'none',
+        borderRadius: T.radius,
+        background: T.brand,
+        color: T.bgBase,
+        font: `500 13px/20px ${T.font}`,
+        cursor: 'pointer',
+      };
+      const secondaryButton = {
+        ...primaryButton,
+        background: T.bgLayer2,
+        color: T.labelPrimary,
+        border: `1px solid ${T.border}`,
+      };
+      const cardOf = (tone) => ({
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 8,
+        padding: '14px 16px',
+        border: `1px solid ${T.border}`,
+        borderLeft: `3px solid ${tone}`,
+        borderRadius: T.radiusLg,
+        background: T.bgLayer1,
+      });
+      const tone = phase === 'error' ? T.error : T.success;
+      const zoneHeadline = dragging
+        ? tr('import.dropActive')
+        : busy
+          ? tr('import.working', { name: filename })
+          : tr('import.choose');
+
       return h(
-        React.Fragment,
-        null,
+        'div',
+        {
+          style: {
+            height: '100%',
+            overflowY: 'auto',
+            background: T.bgBase,
+            color: T.labelPrimary,
+            font: `14px/22px ${T.font}`,
+          },
+          onDragOver,
+          onDragLeave,
+          onDrop,
+        },
         h(
-          'button',
+          'div',
           {
-            ref: buttonRef,
-            type: 'button',
-            title: label,
-            'aria-label': label,
-            'aria-busy': busy ? 'true' : undefined,
-            'data-session-port-import': 'button',
-            onClick: pick,
-            ...button.handlers,
             style: {
-              ...button.style,
-              width: wide === true ? '100%' : undefined,
-              justifyContent: wide === true ? 'flex-start' : 'center',
-              opacity: busy ? 0.6 : 1,
-              cursor: busy ? 'progress' : 'pointer',
+              maxWidth: 720,
+              margin: '0 auto',
+              padding: '32px 24px 48px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 20,
             },
           },
-          h(Icon, { kind: 'import' }),
-          wide === true ? footerLabel(label) : null,
+          h(
+            'div',
+            { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+            h('h1', { style: { margin: 0, font: `600 20px/28px ${T.font}` } }, tr('import.title')),
+            h('p', { style: { margin: 0, font: `13px/20px ${T.font}`, color: T.labelSecondary } }, tr('import.panelHint')),
+          ),
+          h(
+            'div',
+            {
+              role: 'button',
+              tabIndex: busy ? -1 : 0,
+              'aria-label': tr('import.choose'),
+              'aria-busy': busy ? 'true' : undefined,
+              'data-session-port-import': 'zone',
+              onClick: pick,
+              onKeyDown: (event) => {
+                if (event.key !== 'Enter' && event.key !== ' ') return;
+                event.preventDefault();
+                pick();
+              },
+              style: {
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: 12,
+                padding: '32px 20px',
+                border: `1.5px dashed ${dragging ? T.brand : T.border}`,
+                borderRadius: T.radiusLg,
+                background: dragging ? T.bgLayer2 : T.bgLayer1,
+                textAlign: 'center',
+                cursor: busy ? 'progress' : 'pointer',
+                transition: 'border-color 120ms ease, background 120ms ease',
+              },
+            },
+            h(
+              'span',
+              {
+                'aria-hidden': 'true',
+                style: {
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: 44,
+                  height: 44,
+                  borderRadius: '50%',
+                  background: T.bgLayer2,
+                  color: dragging ? T.brand : T.labelSecondary,
+                },
+              },
+              h(Icon, { kind: 'import', size: 22 }),
+            ),
+            h('span', { style: { font: `600 14px/22px ${T.font}`, color: T.labelPrimary } }, zoneHeadline),
+            h('span', { style: { font: `12px/18px ${T.font}`, color: T.labelSecondary } }, tr('import.hint')),
+          ),
+          h('input', {
+            ref: inputRef,
+            type: 'file',
+            accept: '.zip,.jsonl,application/zip,application/jsonl,application/x-ndjson',
+            style: { display: 'none' },
+            onChange: onFiles,
+            'aria-hidden': 'true',
+            tabIndex: -1,
+          }),
+          phase === 'error'
+            ? h(
+                'div',
+                { role: 'alert', style: cardOf(tone) },
+                h('span', { style: { font: `600 13px/20px ${T.font}`, color: T.labelPrimary } }, tr('import.failed')),
+                h('span', { style: { font: `13px/20px ${T.font}`, color: T.labelSecondary } }, message),
+                h(
+                  'span',
+                  { style: { display: 'flex', gap: 8, marginTop: 4 } },
+                  h('button', { type: 'button', onClick: pick, style: primaryButton }, tr('import.retry')),
+                ),
+              )
+            : null,
+          phase === 'done'
+            ? h(
+                'div',
+                { role: 'status', style: cardOf(tone) },
+                h(
+                  'span',
+                  { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+                  h('span', {
+                    'aria-hidden': 'true',
+                    style: { width: 8, height: 8, borderRadius: '50%', background: T.success, flex: 'none' },
+                  }),
+                  h('span', { style: { font: `600 13px/20px ${T.font}`, color: T.labelPrimary } }, tr('import.resultTitle')),
+                ),
+                typeof result?.title === 'string' && result.title !== ''
+                  ? h('span', { style: { font: `13px/20px ${T.font}`, color: T.labelPrimary } }, result.title)
+                  : null,
+                h(
+                  'span',
+                  { style: { font: `12px/18px ${T.mono}`, color: T.labelSecondary, wordBreak: 'break-all' } },
+                  tr('import.resultSession', { id: String(result?.sessionId ?? '') }),
+                ),
+                h(
+                  'span',
+                  { style: { font: `12px/18px ${T.font}`, color: T.labelSecondary } },
+                  tr('import.resultCounts', {
+                    events: String(result?.eventCount ?? 0),
+                    attachments: String(result?.attachmentCount ?? 0),
+                  }),
+                ),
+                ...warnings.map((warning, index) =>
+                  h(
+                    'span',
+                    { key: `${index}-${warning.slice(0, 12)}`, style: { font: `12px/18px ${T.font}`, color: T.warn } },
+                    `${tr('common.note')}：${warning}`,
+                  ),
+                ),
+                message !== ''
+                  ? h('span', { style: { font: `12px/18px ${T.font}`, color: T.labelSecondary } }, message)
+                  : null,
+                h(
+                  'span',
+                  { style: { display: 'flex', gap: 8, marginTop: 4 } },
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      onClick: openResult,
+                      disabled: opening || result?.sessionId === undefined,
+                      style: { ...primaryButton, opacity: opening ? 0.6 : 1, cursor: opening ? 'progress' : 'pointer' },
+                    },
+                    opening ? tr('import.busy') : tr('import.open'),
+                  ),
+                  h('button', { type: 'button', onClick: reset, style: secondaryButton }, tr('import.another')),
+                ),
+              )
+            : null,
+          h('p', { style: { margin: 0, font: `12px/18px ${T.font}`, color: T.labelSecondary } }, tr('import.note')),
         ),
-        h('input', {
-          ref: inputRef,
-          type: 'file',
-          accept: '.zip,.jsonl,application/zip,application/jsonl,application/x-ndjson',
-          style: { display: 'none' },
-          onChange,
-          'aria-hidden': 'true',
-          tabIndex: -1,
-        }),
-        h(StatusPanel, {
-          anchorRef: buttonRef,
-          open: panelOpen,
-          tone: phase === 'error' ? 'error' : phase === 'done' ? 'success' : 'working',
-          title,
-          lines,
-          onClose: () => setPanelOpen(false),
-          t,
-        }),
       );
     }
     // #endregion
@@ -639,23 +852,45 @@ window.__ModuleLoader__.load({
       }
 
       try {
-        ctx.slots.inject('sidebar.footer.action', () =>
+        ctx.slots.inject('main', () =>
           ctx.slots.register(
             {
-              name: 'sidebar.footer.action',
-              id: 'session-port-import',
-              order: 10,
+              name: 'main',
+              key: PANEL_ID,
               locale: NS,
               inject: () => ({
                 importArchive: (file) => importArchive(ctx, file),
                 openImported: (sessionId) => openImported(ctx, sessionId),
               }),
             },
-            SessionImportAction,
+            SessionImportPanel,
           ),
         );
       } catch (error) {
-        console.warn('session-port: import action registration failed:', error);
+        console.warn('session-port: import panel registration failed:', error);
+      }
+
+      // The sidebar row: one global-panel entry beside 插件 / 日程, ordered
+      // directly below the plugins row (order 0) and above schedules (order 10).
+      // Its label is a thunk the sidebar re-reads on every projection, so the row
+      // follows a live locale switch; without a locale service it falls back to
+      // this plugin's own dictionary rather than dropping the row.
+      try {
+        const t = typeof ctx.locale?.bind === 'function' ? ctx.locale.bind(NS) : (key) => zh[key] ?? key;
+        ctx.slots.inject('sidebar.panellist', () =>
+          ctx.slots.register(
+            {
+              name: 'sidebar.panellist',
+              id: PANEL_ID,
+              order: 5,
+              locale: NS,
+              label: () => t('import.title'),
+            },
+            ({ size }) => h(Icon, { kind: 'import', size: size ?? 16 }),
+          ),
+        );
+      } catch (error) {
+        console.warn('session-port: import panel row registration failed:', error);
       }
     }
     // #endregion

@@ -2,7 +2,8 @@
 #
 # 一行 insert 同时承载两个半边（与 dsh-prompt-setting / dsh-live-token-stats 同构）：
 #   host   半边：/session-port/* 路由（导出下载、导入上传、info）与 session_port 工具；
-#   client 半边：会话标题栏的「导出会话」按钮 + 侧边栏底部的「导入会话」按钮，
+#   client 半边：会话标题栏的「导出会话」按钮 + 侧栏导航里「插件」下方的一行
+#                「导入会话」（点开是导入面板），
 #                由 package.json 的 `dsh.client` + exports["./client"] 编入页面。
 #
 # name 必须等于包名：Cordis 按 name 解析包，写错会让整行起不来。
