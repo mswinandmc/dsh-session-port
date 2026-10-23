@@ -633,6 +633,58 @@ test('attachment references survive an export→import round trip with identical
   assert.deepEqual(collectAttachmentRefs(target.committed.batches[0]).images.size, 1);
 });
 
+test('file attachment names survive an export→import round trip verbatim', async () => {
+  // The attachment store accepts names up to 255 UTF-8 bytes and canonicalizes
+  // only the characters file systems refuse. The archive must carry that name
+  // unchanged — DSH's own session-log export does — so a long CJK name must not
+  // come back shorter after a round trip.
+  const fileName = `${'长'.repeat(80)}.txt`;
+  const fileDigest = 'd'.repeat(64);
+  const fileRef = { attachmentId: `sha256:${fileDigest}`, name: fileName, bytes: 7 };
+  const fileEvents = [
+    { type: 'turn/start', seq: 0, time: 1, data: { turn: 0 } },
+    {
+      type: 'user/message',
+      seq: 1,
+      time: 2,
+      data: {
+        role: 'user',
+        id: 'm1',
+        source: { kind: 'user' },
+        content: [{ type: 'file', attachment: fileRef }],
+      },
+      surfaceOp: 'append',
+    },
+    { type: 'turn/end', seq: 2, time: 3, data: { turn: 0, reason: { kind: 'completed' } } },
+  ];
+
+  const source = fakeContext({
+    readSession: async () => ({ session: header, inheritedEventCount: 0, events: fileEvents }),
+    attachments: { fileHostPath: () => join(fixtures, 'zip-src', 'session.v4.jsonl') },
+  });
+  const exported = await exportSession(source.ctx, { sessionId: header.id, includeDescendants: false });
+  const expectedEntry = `files/${fileDigest.slice(0, 2)}/${fileDigest}/${fileName}`;
+  const entries = readZipEntries(exported.data);
+  assert.ok(entries.some((entry) => entry.name === expectedEntry), `archive lacks ${expectedEntry}`);
+
+  const stored = [];
+  const target = fakeContext({
+    attachments: {
+      async saveFile({ data, name }) {
+        stored.push({ data, name });
+        return { attachmentId: `sha256:${fileDigest}`, name, bytes: data.byteLength };
+      },
+    },
+  });
+  const result = await importSession(target.ctx, { buffer: exported.data, cwd });
+  assert.equal(result.attachmentCount, 1);
+  assert.equal(result.verified, true);
+  assert.equal(stored.length, 1);
+  assert.equal(stored[0].name, fileName);
+  const importedRef = collectAttachmentRefs(target.committed.batches[0]).files.get(`sha256:${fileDigest}`);
+  assert.equal(importedRef.name, fileName);
+});
+
 test('importSession re-points session-log delivery markers at the new session', async () => {
   // A log exported from another session carries delivery-accepted markers that
   // name that session. The current-format reader refuses such a log, so the

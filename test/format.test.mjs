@@ -10,6 +10,7 @@ import {
   SessionPortFormatError,
   collectAttachmentRefs,
   fileEntryName,
+  fileEntryLeafName,
   findRootLogEntry,
   imageEntryName,
   isZipBuffer,
@@ -213,6 +214,36 @@ test('sanitizeFileName removes characters a file system refuses', () => {
   assert.equal(sanitizeFileName(''), 'session');
   assert.equal(sanitizeFileName(undefined, 'fallback'), 'fallback');
   assert.ok(sanitizeFileName('x'.repeat(200)).length <= 60);
+});
+
+test('attachment file entry names mirror DSH native export verbatim', () => {
+  const digest = 'e'.repeat(64);
+  const ref = (name) => ({ attachmentId: `sha256:${digest}`, name, bytes: 1 });
+  const leaf = (name) => fileEntryName(ref(name)).slice(`files/ee/${digest}/`.length);
+
+  // The shipped exporter replaces only separators and control characters.
+  assert.equal(fileEntryLeafName('a/b\\c\u0000d\u001fe\u007ff.txt'), 'a_b_c_d_e_f.txt');
+  // Empty and dot-only segments would escape or collide with the folder.
+  assert.equal(fileEntryLeafName(''), 'file');
+  assert.equal(fileEntryLeafName('.'), 'file');
+  assert.equal(fileEntryLeafName('..'), 'file');
+  assert.equal(leaf('..'), 'file');
+
+  // Everything else is written verbatim: the attachment store already bounds a
+  // stored name at 255 UTF-8 bytes, so the archive must not re-shorten it.
+  const longCjkName = `${'长'.repeat(80)}.txt`;
+  assert.equal(leaf(longCjkName), longCjkName);
+  assert.equal(leaf(`${'x'.repeat(200)}.txt`), `${'x'.repeat(200)}.txt`);
+  assert.equal(leaf('.env.example'), '.env.example');
+  assert.equal(leaf('a  b   c.txt'), 'a  b   c.txt');
+  assert.equal(leaf('季度 报告（终版）.pdf'), '季度 报告（终版）.pdf');
+  // Characters the store canonicalizes stay as they are in a foreign log: the
+  // exporter is not the layer that re-sanitizes them.
+  assert.equal(leaf('a:b?.txt'), 'a:b?.txt');
+
+  const entryName = fileEntryName(ref(longCjkName));
+  assert.equal(entryName, `files/ee/${digest}/${longCjkName}`);
+  assert.equal(parseAttachmentEntryName(entryName).baseName, longCjkName);
 });
 
 test('findRootLogEntry prefers the highest version and accepts one loose log', () => {
