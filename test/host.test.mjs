@@ -96,7 +96,8 @@ function fakeContext(options = {}) {
       },
       async readTitle(sessionId) {
         if (options.readTitle !== undefined) return options.readTitle(sessionId);
-        return { title: '测试会话' };
+        // `sessionQuery.readTitle` resolves the folded title string itself.
+        return '测试会话';
       },
     },
     sessionPersistence: {
@@ -185,6 +186,21 @@ test('exportSession to JSONL keeps the log and states the attachment limit', asy
   assert.equal(exported.warnings.length, 1);
   const parsed = parseSessionLog(exported.data.toString('utf8'));
   assert.equal(parsed.events.length, events.length);
+});
+
+test('exportSession names the archive from the queried title when the log carries none', async () => {
+  // `sessionQuery.readTitle` resolves the title string directly; a log without a
+  // title event must still be named after the session's title.
+  const { ctx } = fakeContext({
+    readSession: async () => ({
+      session: header,
+      inheritedEventCount: 0,
+      events: events.filter((event) => event.type !== 'session/title'),
+    }),
+    readTitle: async () => '来自查询的标题',
+  });
+  const exported = await exportSession(ctx, { sessionId: header.id });
+  assert.equal(exported.filename, `来自查询的标题-${header.id}.zip`);
 });
 
 test('exportSession reports an unknown session as a stable failure', async () => {
