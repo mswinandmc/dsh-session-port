@@ -169,7 +169,8 @@ async function handleExport(ctx, settings, url, res) {
   const sessionId = url.searchParams.get('sessionId') ?? '';
   const format = url.searchParams.get('format') === 'jsonl' ? 'jsonl' : 'zip';
   const includeAttachments = url.searchParams.get('attachments') !== '0' && settings.includeAttachments;
-  const exported = await exportSession(ctx, { sessionId, format, includeAttachments });
+  const includeDescendants = url.searchParams.get('subagents') !== '0';
+  const exported = await exportSession(ctx, { sessionId, format, includeAttachments, includeDescendants });
   res.writeHead(200, {
     'content-type': format === 'jsonl' ? 'application/jsonl; charset=utf-8' : 'application/zip',
     'content-length': String(exported.data.length),
@@ -344,7 +345,9 @@ async function cwdOf(ctx, agent) {
 
 /** Tool result text for one written export. */
 function exportToolText(written) {
-  const lines = [`已导出当前会话：${written.path}（${written.eventCount} 条事件，${written.attachmentCount} 个附件）`];
+  const parts = [`${written.eventCount} 条事件`, `${written.attachmentCount} 个附件`];
+  if (written.subagentCount > 0) parts.push(`${written.subagentCount} 个子会话`);
+  const lines = [`已导出当前会话：${written.path}（${parts.join('，')}）`];
   for (const warning of written.warnings ?? []) lines.push(`注意：${warning}`);
   return lines.join('\n');
 }
@@ -353,7 +356,9 @@ function exportToolText(written) {
 function importToolText(result) {
   const lines = [
     `已导入为新会话 ${result.sessionId}（${result.eventCount} 条事件，${result.attachmentCount} 个附件）`,
-    '该会话已写入会话列表；刷新或重新打开页面即可在侧边栏看到，并像普通会话一样打开它。',
+    result.verified === false
+      ? '该会话已写入，但当前 DSH 重新打开它时校验失败——请查看下面的说明，并考虑重新导出后再导入。'
+      : '该会话已写入并已验证可打开；刷新或重新打开页面即可在侧边栏看到它。',
   ];
   if (result.title !== undefined) lines.push(`会话标题：${result.title}`);
   for (const warning of result.warnings ?? []) lines.push(`注意：${warning}`);

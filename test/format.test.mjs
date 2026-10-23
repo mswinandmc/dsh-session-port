@@ -17,9 +17,11 @@ import {
   parseSessionLog,
   rewriteAttachmentRefs,
   rewriteDeliveryIdentity,
+  rewriteSeedMarkers,
   sanitizeFileName,
   serializeSessionLog,
   sessionLogFileName,
+  subagentLogEntryName,
   validateEvents,
 } from '../lib/format.js';
 
@@ -285,4 +287,38 @@ test('rewriteDeliveryIdentity re-points active-generation delivery markers only'
   // No marker to rewrite -> the exact same array comes back.
   const unchanged = [other];
   assert.equal(rewriteDeliveryIdentity(unchanged, 'session-copy', 4), unchanged);
+});
+
+test('rewriteSeedMarkers flattens the inherited cut without touching history', () => {
+  const inherited = {
+    type: 'session/end-seed',
+    seq: 3,
+    time: 4,
+    data: { inherited: true },
+  };
+  const plainSeed = { type: 'session/end-seed', seq: 7, time: 8, data: {} };
+  const before = { type: 'user/message', seq: 2, time: 3, data: { message: { content: [] } } };
+  const events = [before, inherited, plainSeed];
+  const rewritten = rewriteSeedMarkers(events);
+  // The marker stays at its seq — only the seeded-only flag disappears, so the
+  // rest of the log keeps its dense sequence untouched.
+  assert.equal(rewritten[1].type, 'session/end-seed');
+  assert.equal(rewritten[1].seq, 3);
+  assert.equal('inherited' in rewritten[1].data, false);
+  assert.deepEqual(rewritten[1].data, {});
+  // A plain marker and ordinary events keep their identity.
+  assert.equal(rewritten[2], plainSeed);
+  assert.equal(rewritten[0], before);
+  // The input log is not mutated.
+  assert.equal(events[1].data.inherited, true);
+  // Nothing to flatten -> the exact same array comes back.
+  const untouched = [before, plainSeed];
+  assert.equal(rewriteSeedMarkers(untouched), untouched);
+});
+
+test('subagentLogEntryName mirrors the shipped subagents/ layout', () => {
+  assert.equal(subagentLogEntryName('session-a1', 4), 'subagents/session-a1/session.v4.jsonl');
+  assert.equal(subagentLogEntryName('session-a1', undefined), 'subagents/session-a1/session.jsonl');
+  // Separators and dots cannot escape the folder.
+  assert.equal(subagentLogEntryName('../evil id', 4), 'subagents/___evil_id/session.v4.jsonl');
 });

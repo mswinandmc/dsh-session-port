@@ -15,7 +15,7 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { collectAttachmentRefs, parseSessionLog } from '../lib/format.js';
+import { collectAttachmentRefs, parseSessionLog, serializeSessionLog } from '../lib/format.js';
 import {
   DEFAULT_MAX_IMPORT_BYTES,
   defaultExportDirectory,
@@ -85,8 +85,19 @@ function fakeContext(options = {}) {
           ? [{ header: { version: 4 } }]
           : options.versions.map((version) => ({ header: { version } }));
       },
+      async traceSession(sessionId) {
+        if (options.traceSession !== undefined) return options.traceSession(sessionId);
+        return { target: { header: { id: sessionId } }, ancestors: [], descendants: [], complete: true };
+      },
       async readSession(sessionId) {
         if (options.readSession !== undefined) return options.readSession(sessionId);
+        // A session this import already created reads back from the recording
+        // store, which is what the post-write verification checks.
+        const created = committed.headers.find((entry) => entry.id === sessionId);
+        if (created !== undefined) {
+          if (options.verifyFails === true) throw new Error('replay validation failed');
+          return { session: created, inheritedEventCount: 0, events: committed.batches.flat() };
+        }
         if (sessionId !== header.id) {
           const error = new Error(`missing session ${sessionId}`);
           error.code = 'session/not-found';
@@ -211,6 +222,141 @@ test('exportSession reports an unknown session as a stable failure', async () =>
     return true;
   });
   await assert.rejects(exportSession(ctx, { sessionId: '' }), (error) => error.code === 'missing-session');
+});
+
+/** One subagent child of the fixture session, with its own image attachment. */
+function subagentFixture() {
+  const childHeader = {
+    version: 4,
+    id: 'session-child-1',
+    createdAt: header.createdAt + 1,
+    cwd,
+    isSeeded: false,
+    parentSession: header.id,
+    delegationDepth: 1,
+    origin: 'subagent',
+  };
+  const childImage = { attachmentId: 'sha256:bbbb', mediaType: 'image/png', width: 2, height: 2, bytes: 9 };
+  const childEvents = [
+    {
+      seq: 0,
+      time: 1_700_000_000_500,
+      type: 'user/message',
+      data: { message: { content: [{ type: 'image', attachment: childImage }] } },
+    },
+  ];
+  return { childHeader, childEvents };
+}
+
+test('exportSession packs every subagent log and its attachments', async () => {
+  const { childHeader, childEvents } = subagentFixture();
+  const { ctx } = fakeContext({
+    attachments: { imageHostPath: () => join(fixtures, 'pixel.png') },
+    traceSession: async () => ({
+      target: { header },
+      ancestors: [],
+      descendants: [{ session: { header: childHeader }, descendants: [] }],
+      complete: true,
+    }),
+    readSession: async (id) =>
+      id === header.id ? { session: header, inheritedEventCount: 0, events } : { session: childHeader, inheritedEventCount: 0, events: childEvents },
+  });
+  const exported = await exportSession(ctx, { sessionId: header.id });
+  assert.equal(exported.subagentCount, 1);
+  assert.equal(exported.attachmentCount, 2);
+  assert.deepEqual(exported.warnings, []);
+  const names = readZipEntries(exported.data).map((entry) => entry.name).sort();
+  assert.deepEqual(names, [
+    'media/sha256:aaaa.png',
+    'media/sha256:bbbb.png',
+    'session.v4.jsonl',
+    'subagents/session-child-1/session.v4.jsonl',
+  ]);
+  const childEntry = readZipEntries(exported.data).find((entry) => entry.name === 'subagents/session-child-1/session.v4.jsonl');
+  assert.equal(parseSessionLog(Buffer.from(childEntry.data).toString('utf8')).header.id, 'session-child-1');
+});
+
+test('exportSession warns instead of failing when one subagent log is unreadable', async () => {
+  const { childHeader } = subagentFixture();
+  const { ctx } = fakeContext({
+    traceSession: async () => ({
+      target: { header },
+      ancestors: [],
+      descendants: [{ session: { header: childHeader }, descendants: [] }],
+      complete: true,
+    }),
+    readSession: async (id) => {
+      if (id === header.id) return { session: header, inheritedEventCount: 0, events };
+      throw new Error('torn log');
+    },
+  });
+  const exported = await exportSession(ctx, { sessionId: header.id, includeAttachments: false });
+  assert.equal(exported.subagentCount, 0);
+  assert.equal(exported.warnings.length, 1);
+  assert.match(exported.warnings[0], /子会话 session-child-1 读取失败/u);
+  assert.deepEqual(
+    readZipEntries(exported.data).map((entry) => entry.name),
+    ['session.v4.jsonl'],
+  );
+});
+
+test('exportSession can leave subagents out on request', async () => {
+  let traced = false;
+  const { ctx } = fakeContext({
+    traceSession: async () => {
+      traced = true;
+      return { target: { header }, ancestors: [], descendants: [], complete: true };
+    },
+  });
+  const exported = await exportSession(ctx, { sessionId: header.id, includeDescendants: false });
+  assert.equal(exported.subagentCount, 0);
+  assert.equal(traced, false);
+});
+
+test('importSession flattens a forked log so the new session can be opened', async () => {
+  // A fork's log starts with the parent's history behind an inherited end-seed
+  // marker; the current-format reader refuses that inside an unseeded session.
+  const forkedHeader = {
+    version: 4,
+    id: 'session-forked',
+    createdAt: header.createdAt,
+    cwd,
+    isSeeded: true,
+    parentSession: 'session-parent',
+    delegationDepth: 1,
+  };
+  const forkedEvents = [
+    { seq: 0, type: 'user/message', time: 1_700_000_000_100, data: { message: { content: [{ type: 'text', text: 'inherited' }] } } },
+    { seq: 1, type: 'session/end-seed', time: 1_700_000_000_200, data: { inherited: true } },
+    { seq: 2, type: 'session/title', time: 1_700_000_000_300, data: { title: '分支会话' } },
+  ];
+  const buffer = Buffer.from(serializeSessionLog(forkedHeader, forkedEvents), 'utf8');
+  const target = fakeContext();
+  const result = await importSession(target.ctx, { buffer, cwd });
+
+  const created = target.committed.headers[0];
+  assert.equal(created.isSeeded, false);
+  assert.equal(created.parentSession, undefined);
+  const written = target.committed.batches[0];
+  assert.equal(written.length, 3);
+  assert.equal(written[1].type, 'session/end-seed');
+  assert.equal('inherited' in written[1].data, false);
+  // Dense sequence and the rest of the history stay exactly as exported.
+  assert.deepEqual(
+    written.map((event) => event.seq),
+    [0, 1, 2],
+  );
+  assert.deepEqual(written[2], forkedEvents[2]);
+  assert.equal(result.verified, true);
+  assert.deepEqual(result.warnings, []);
+});
+
+test('importSession reports a written session the reader cannot reopen', async () => {
+  const buffer = Buffer.from(serializeSessionLog(header, events), 'utf8');
+  const target = fakeContext({ verifyFails: true });
+  const result = await importSession(target.ctx, { buffer, cwd });
+  assert.equal(result.verified, false);
+  assert.ok(result.warnings.some((line) => line.includes('无法重新打开')));
 });
 
 test('importSession round-trips an exported archive into a new standalone session', async () => {

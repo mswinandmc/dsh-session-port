@@ -65,7 +65,10 @@ dsh plugin --profile web remove dsh-session-port        # 卸载
 - 落在**当前会话所在的工作区**（空闲时落在最近的工作区）；
 - 从原会话继承标题、完整对话与工具历史、模型/预设（预设在本机不存在时自动退回默认）；
 - 日志里指向原会话的内部标记（投递水位等）会自动改写成新会话，否则 DSH 会拒绝加载该会话的历史；
-- 子会话（`subagents/`）不随导入恢复，导入的是主会话本身。
+- fork/分支会话的继承标记（`session/end-seed {inherited:true}`）会被抹平，否则当前格式读取会以
+  「unseeded Session contains an inherited end-seed marker」拒绝打开——那是「导入成功、点开报错」的根因；
+- 写完后会读回校验一次：DSH 自己打不开的会话会当场在结果里告警，而不是等用户点开才发现；
+- 子会话（`subagents/`）**会随导出**（与 DSH 自带导出一致），但导入只恢复主会话本身。
 
 也可以用自然语言让本鲸帮忙，例如「把当前会话导出到 D 盘备份」——插件注册了 `session_port` 工具。
 
@@ -76,8 +79,9 @@ dsh plugin --profile web remove dsh-session-port        # 卸载
 ```
 <标题>-<会话 id>.zip
 ├── session.v4.jsonl                 # 第一行会话头，随后每行一条会话事件
-├── media/<attachmentId>.<ext>       # 会话引用的图片
-└── files/<前缀>/<摘要>/<文件名>      # 会话引用的文件
+├── subagents/<会话 id>/session.v4.jsonl  # 每个子会话一份日志（与自带导出同名同层级）
+├── media/<attachmentId>.<ext>       # 会话（含子会话）引用的图片
+└── files/<前缀>/<摘要>/<文件名>      # 会话（含子会话）引用的文件
 ```
 
 会话日志（`.jsonl`）本身就是合法的导入输入，便于人工检查或跨版本处理。
@@ -86,7 +90,7 @@ dsh plugin --profile web remove dsh-session-port        # 卸载
 
 - 导入要求**格式版本一致**：v4 的压缩包导入当前 DSH；跨大版本请先用对应版本 DSH 打开再重新导出。
 - 单次导入默认上限 512 MiB，可在插件配置里用 `maxImportBytes` 调整。
-- 导入只恢复主会话；子会话、会话收藏/置顶/归档等**列表状态**不迁移。
+- 导入只恢复主会话；子会话、会话收藏/置顶/归档等**列表状态**不迁移（子会话日志仍在压缩包里，可另行取用）。
 - 会话的 `cwd` 以当前工作区为准；原目录在本机不存在时不会被记录。
 
 ## 配置（`cordis.patch.yml` 的插件行）
@@ -105,8 +109,10 @@ dsh plugin --profile web remove dsh-session-port        # 卸载
 
 - 宿主端 `index.js`：`/session-port/{info,export,import}` 认证路由 + `session_port` 工具；
   两个入口调用 `lib/host.js` 里的同一组实现，所以格式与失败语义不会分叉。
-- `lib/host.js`：导出走 `sessionQuery.readSession`（与自带导出同一份已校验视图），
-  导入通过 `sessionPersistence.create → append → flush → close` 落盘，再挂到工作区。
+- `lib/host.js`：导出走 `sessionQuery.readSession`（与自带导出同一份已校验视图），并用
+  `traceSession` 把每个子会话按 `subagents/<id>/` 写进同一个压缩包；
+  导入通过 `sessionPersistence.create → append → flush → close` 落盘，再挂到工作区，
+  最后用 `readSession` 读回校验一次。
 - `lib/format.js`：纯函数（JSONL 序列化/解析、附件引用收集与改写、文件名清洗），有单测。
 - `lib/zip.js`：无依赖 ZIP 读写（基于 `node:zlib`），有单测。
 - `client.js`：没有 `@deepseek-ai/*` 运行时依赖的客户端半边，只用 `react` 与宿主主题变量。
@@ -117,8 +123,8 @@ dsh plugin --profile web remove dsh-session-port        # 卸载
 
 ```bash
 cd dsh-session-port
-node --test test/format.test.mjs   # 13 项：JSONL 序列化/解析、附件引用、投递标记、文件名
-node --test test/host.test.mjs     # 20 项：导出→导入往返、真实 zip 工具产物、投递标记改写、标题回退、失败路径
+node --test test/format.test.mjs   # 15 项：JSONL 序列化/解析、附件引用、投递标记、继承标记、文件名
+node --test test/host.test.mjs     # 25 项：导出→导入往返、子会话打包、fork 标记抹平、写后校验、失败路径
 node --test test/client.test.mjs   #  7 项：浏览器半边注册（面板行 + 插件行）、导入面板渲染（无浏览器沙箱）
 node --test test/zip.test.mjs      # 34 项：ZIP 读写、data descriptor 流式 zip、损坏输入
 ```
