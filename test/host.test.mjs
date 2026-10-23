@@ -116,6 +116,7 @@ function fakeContext(options = {}) {
         return undefined;
       },
       async create(nextHeader) {
+        if (options.createFails === true) throw new Error('create denied');
         committed.headers.push(nextHeader);
         return {
           header: nextHeader,
@@ -812,6 +813,35 @@ test('export keeps one archive entry per name when a digest has two names', asyn
   const names = readZipEntries(exported.data).map((entry) => entry.name);
   assert.ok(names.includes(`files/ee/${fileDigest}/原始名.txt`), `archive lacks 原始名.txt: ${names.join(', ')}`);
   assert.ok(names.includes(`files/ee/${fileDigest}/别名副本.txt`), `archive lacks 别名副本.txt`);
+});
+
+test('a session-create failure restores no attachments before it', async () => {
+  const source = fakeContext({
+    attachments: { imageHostPath: () => join(fixtures, 'pixel.png') },
+  });
+  const exported = await exportSession(source.ctx, { sessionId: header.id, includeDescendants: false });
+  assert.ok(exported.attachmentCount > 0, '测试前提：导出档案里带附件');
+
+  const written = [];
+  const target = fakeContext({
+    createFails: true,
+    attachments: {
+      async saveImages(inputs) {
+        written.push(...inputs);
+        return [];
+      },
+      async saveFile(input) {
+        written.push(input);
+        return undefined;
+      },
+    },
+  });
+  await assert.rejects(
+    importSession(target.ctx, { buffer: exported.data, cwd }),
+    (error) => error.code === 'create-failed',
+  );
+  assert.equal(written.length, 0, '创建会话失败时不能先恢复附件，否则会留下不可达的附件对象');
+  assert.equal(target.committed.headers.length, 0);
 });
 
 test('importSession re-points session-log delivery markers at the new session', async () => {
