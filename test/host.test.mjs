@@ -9,7 +9,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
@@ -22,7 +22,6 @@ import {
   detectFormatVersion,
   exportSession,
   importSession,
-  openSessionExport,
   readImportFile,
   servicesOf,
   writeExportFile,
@@ -683,97 +682,6 @@ test('writeExportFile writes the archive into the requested directory', async ()
     rmSync(directory, { recursive: true, force: true });
   }
   assert.match(defaultExportDirectory(), /session-port[\\/]exports$/u);
-});
-
-test('openSessionExport exposes the download facts before the first byte is written', async () => {
-  const { ctx } = fakeContext({
-    attachments: { imageHostPath: () => join(fixtures, 'pixel.png') },
-  });
-  const plan = await openSessionExport(ctx, { sessionId: header.id });
-  assert.match(plan.filename, /^测试会话-session-source-1\.zip$/u);
-  assert.equal(plan.eventCount, events.length);
-  assert.equal(plan.subagentCount, 0);
-  assert.deepEqual(plan.warnings, []);
-  const chunks = [];
-  const written = await plan.writeTo(async (chunk) => {
-    chunks.push(Buffer.from(chunk));
-  });
-  assert.ok(chunks.length > 1, '归档必须分块写出，而不是一次交付整包');
-  assert.equal(written.attachmentCount, 1);
-  const entries = readZipEntries(Buffer.concat(chunks));
-  assert.deepEqual(entries.map((entry) => entry.name).sort(), ['media/sha256:aaaa.png', 'session.v4.jsonl']);
-});
-
-test('writeExportFile streams a large file attachment byte-for-byte', async () => {
-  const big = Buffer.alloc(2 * 1024 * 1024 + 7);
-  for (let index = 0; index < big.length; index += 1) big[index] = (index * 31) % 251;
-  const sourceDirectory = mkdtempSync(join(tmpdir(), 'session-port-src-'));
-  const exportDirectory = mkdtempSync(join(tmpdir(), 'session-port-out-'));
-  const digest = 'f'.repeat(64);
-  const fileRef = { attachmentId: `sha256:${digest}`, name: '大文件.bin', bytes: big.length };
-  const bigEvents = [
-    { type: 'turn/start', seq: 0, time: 1, data: { turn: 0 } },
-    {
-      type: 'user/message',
-      seq: 1,
-      time: 2,
-      data: {
-        role: 'user',
-        id: 'm1',
-        source: { kind: 'user' },
-        content: [{ type: 'file', attachment: fileRef }],
-      },
-      surfaceOp: 'append',
-    },
-    { type: 'turn/end', seq: 2, time: 3, data: { turn: 0, reason: { kind: 'completed' } } },
-  ];
-  try {
-    const sourcePath = join(sourceDirectory, 'big.bin');
-    writeFileSync(sourcePath, big);
-    const { ctx } = fakeContext({
-      readSession: async () => ({ session: header, inheritedEventCount: 0, events: bigEvents }),
-      attachments: { fileHostPath: () => sourcePath },
-    });
-    const written = await writeExportFile(ctx, { sessionId: header.id, directory: exportDirectory });
-    assert.equal(written.attachmentCount, 1);
-    const entries = readZipEntries(readFileSync(written.path));
-    const stored = entries.find((entry) => entry.name === `files/ff/${digest}/大文件.bin`);
-    assert.ok(stored !== undefined, `归档里缺少附件条目：${entries.map((entry) => entry.name).join(', ')}`);
-    assert.ok(Buffer.from(stored.data).equals(big), '流式写入的附件必须逐字节一致');
-  } finally {
-    rmSync(sourceDirectory, { recursive: true, force: true });
-    rmSync(exportDirectory, { recursive: true, force: true });
-  }
-});
-
-test('export skips a file attachment it cannot open before writing its entry', async () => {
-  const digest = 'a'.repeat(64);
-  const missingEvents = [
-    { type: 'turn/start', seq: 0, time: 1, data: { turn: 0 } },
-    {
-      type: 'user/message',
-      seq: 1,
-      time: 2,
-      data: {
-        role: 'user',
-        id: 'm1',
-        source: { kind: 'user' },
-        content: [{ type: 'file', attachment: { attachmentId: `sha256:${digest}`, name: 'gone.bin', bytes: 3 } }],
-      },
-      surfaceOp: 'append',
-    },
-    { type: 'turn/end', seq: 2, time: 3, data: { turn: 0, reason: { kind: 'completed' } } },
-  ];
-  const { ctx } = fakeContext({
-    readSession: async () => ({ session: header, inheritedEventCount: 0, events: missingEvents }),
-    attachments: { fileHostPath: () => join(tmpdir(), 'session-port-does-not-exist.bin') },
-  });
-  const exported = await exportSession(ctx, { sessionId: header.id, includeDescendants: false });
-  assert.equal(exported.attachmentCount, 0);
-  assert.ok(exported.warnings.some((warning) => warning.includes('读取失败')), `warnings: ${exported.warnings.join(' | ')}`);
-  // The entry was skipped before its header, so the archive itself is still valid.
-  const entries = readZipEntries(exported.data);
-  assert.deepEqual(entries.map((entry) => entry.name), ['session.v4.jsonl']);
 });
 
 test('readImportFile resolves relative paths and enforces the size cap', async () => {

@@ -18,15 +18,13 @@
  * @module dsh-session-port
  */
 
-import { once } from 'node:events';
-
 import { SessionPortFormatError } from './lib/format.js';
 import {
   DEFAULT_MAX_IMPORT_BYTES,
   defaultExportDirectory,
   detectFormatVersion,
+  exportSession,
   importSession,
-  openSessionExport,
   readImportFile,
   servicesOf,
   writeExportFile,
@@ -162,14 +160,6 @@ async function dispatchRequest(ctx, settings, connection, req, res) {
 
 /**
  * `GET /session-port/export` — stream one session archive to the browser.
- *
- * Headers go out as soon as the session, its title and the pre-stream warnings
- * are known; the archive body is then produced entry by entry and written to the
- * response with backpressure, so a browser download of a large session never
- * holds the whole archive in the plugin process. Warnings that can only be
- * discovered while reading an attachment arrive too late for the header and are
- * logged instead; if the body already started and fails, the response is
- * destroyed so the browser sees a failed download rather than a truncated file.
  * @param {object} ctx - the plugin context.
  * @param {object} settings - resolved settings.
  * @param {URL} url - parsed request URL.
@@ -180,43 +170,18 @@ async function handleExport(ctx, settings, url, res) {
   const format = url.searchParams.get('format') === 'jsonl' ? 'jsonl' : 'zip';
   const includeAttachments = url.searchParams.get('attachments') !== '0' && settings.includeAttachments;
   const includeDescendants = url.searchParams.get('subagents') !== '0';
-  const plan = await openSessionExport(ctx, { sessionId, format, includeAttachments, includeDescendants });
-  const headers = {
+  const exported = await exportSession(ctx, { sessionId, format, includeAttachments, includeDescendants });
+  res.writeHead(200, {
     'content-type': format === 'jsonl' ? 'application/jsonl; charset=utf-8' : 'application/zip',
-    'cache-control': 'no-store',
+    'content-length': String(exported.data.length),
     'content-disposition': 'attachment; filename="session-export.zip"',
+    'cache-control': 'no-store',
     // Header values are ASCII only, so the UTF-8 name travels percent-encoded.
-    'x-session-port-filename': encodeURIComponent(plan.filename),
-    'x-session-port-warnings': encodeURIComponent(JSON.stringify(plan.warnings ?? [])),
-    'x-session-port-events': String(plan.eventCount),
-  };
-  // The status line and headers are written together with the first body chunk:
-  // a failure that happens before that still gets a normal JSON error response
-  // instead of an empty 200 the browser would save as a broken file.
-  let started = false;
-  try {
-    await plan.writeTo(async (chunk) => {
-      if (!started) {
-        started = true;
-        res.writeHead(200, headers);
-      }
-      if (res.write(chunk)) return;
-      await once(res, 'drain');
-    });
-    if (!started) res.writeHead(200, headers);
-    res.end();
-  } catch (error) {
-    ctx.logger?.warn?.(
-      `session-port: export stream failed: ${error instanceof Error ? error.message : String(error)}`,
-    );
-    if (started) {
-      // The browser already reads an archive: abort the response so the
-      // download fails visibly instead of being saved truncated.
-      res.destroy(error instanceof Error ? error : undefined);
-      return;
-    }
-    sendJson(res, 500, { ok: false, code: 'internal', message: error instanceof Error ? error.message : String(error) });
-  }
+    'x-session-port-filename': encodeURIComponent(exported.filename),
+    'x-session-port-warnings': encodeURIComponent(JSON.stringify(exported.warnings ?? [])),
+    'x-session-port-events': String(exported.eventCount),
+  });
+  res.end(exported.data);
 }
 
 /**

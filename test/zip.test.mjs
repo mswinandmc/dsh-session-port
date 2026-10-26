@@ -16,14 +16,14 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, open, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import * as zlib from 'node:zlib';
 
-import { ZIP_READ_LIMITS, crc32, readZipEntries, streamZipEntries, writeZipEntries } from '../lib/zip.js';
+import { ZIP_READ_LIMITS, crc32, readZipEntries, writeZipEntries } from '../lib/zip.js';
 
 const FIXTURE_ARCHIVE = new URL('./fixtures/compress-archive.zip', import.meta.url);
 const FIXTURE_SOURCE_ROOT = fileURLToPath(new URL('./fixtures/archive-src/', import.meta.url));
@@ -483,88 +483,6 @@ test('read: accepts both Buffer and plain Uint8Array input', () => {
   assertSameEntries(readZipEntries(view), toExpectedMap(ROUND_TRIP_ENTRIES));
 });
 
-// ---------------------------------------------------------------------------
-// Streaming writer
-// ---------------------------------------------------------------------------
-
-test('stream: in-memory entries produce bytes identical to writeZipEntries', async () => {
-  const chunks = [];
-  const summary = await streamZipEntries(ROUND_TRIP_ENTRIES, async (chunk) => {
-    chunks.push(Buffer.from(chunk));
-  });
-  const streamed = Buffer.concat(chunks);
-  assert.ok(streamed.equals(writeZipEntries(ROUND_TRIP_ENTRIES)), '两条写入路径必须产出逐字节相同的归档');
-  assert.equal(summary.entryCount, ROUND_TRIP_ENTRIES.length);
-  assert.equal(summary.bytesWritten, streamed.length);
-});
-
-test('stream: async entry data is written with a data descriptor and reads back', async () => {
-  const big = randomBytes(300 * 1024, 5);
-  async function* chunked() {
-    for (let offset = 0; offset < big.length; offset += 1000) {
-      yield big.subarray(offset, Math.min(offset + 1000, big.length));
-    }
-  }
-  async function* storedChunks() {
-    yield Buffer.from('streamed stored content\n');
-  }
-  const chunks = [];
-  await streamZipEntries(
-    [
-      { name: 'plain.txt', data: Buffer.from('hello zip\n') },
-      { name: 'big.bin', data: chunked() },
-      { name: 'stored.bin', data: storedChunks() },
-    ],
-    async (chunk) => {
-      chunks.push(Buffer.from(chunk));
-    },
-    { compression: 'store' },
-  );
-  // The deflated variant must be readable too (that is the export default).
-  const deflatedChunks = [];
-  await streamZipEntries([{ name: 'big.bin', data: chunked() }], async (chunk) => {
-    deflatedChunks.push(Buffer.from(chunk));
-  });
-
-  for (const zip of [Buffer.concat(chunks), Buffer.concat(deflatedChunks)]) {
-    const parsed = readZipEntries(zip);
-    const bigEntry = parsed.find((entry) => entry.name === 'big.bin');
-    assert.ok(bigEntry !== undefined);
-    assert.ok(Buffer.from(bigEntry.data).equals(big), '流式条目的内容必须逐字节一致');
-    const { headers } = readCentralHeaders(zip);
-    const bigHeader = headers.find((header) => header.name === 'big.bin');
-    assert.equal(bigHeader.uncompressedSize, big.length, '中央目录必须记录真实原始大小');
-    assert.ok((bigHeader.flags & DATA_DESCRIPTOR_FLAG) !== 0, '流式条目必须在头部置位数据描述符标志');
-    // The local header deliberately carries zero sizes: the descriptor follows.
-    assert.equal(zip.readUInt32LE(bigHeader.localHeaderOffset + 18), 0);
-    assert.equal(zip.readUInt32LE(bigHeader.localHeaderOffset + 22), 0);
-  }
-});
-
-test('stream: empty entry list writes a bare EOCD', async () => {
-  const chunks = [];
-  const summary = await streamZipEntries([], async (chunk) => {
-    chunks.push(Buffer.from(chunk));
-  });
-  const zip = Buffer.concat(chunks);
-  assert.equal(summary.entryCount, 0);
-  assert.equal(zip.length, 22);
-  assert.equal(zip.readUInt32LE(0), ZIP_EOCD_SIGNATURE);
-  assert.deepEqual(readZipEntries(zip), []);
-});
-
-test('stream: a failing sink rejects and stops the write', async () => {
-  const seen = [];
-  await assert.rejects(
-    streamZipEntries([{ name: 'a.txt', data: Buffer.from('x'.repeat(10)) }], async (chunk) => {
-      seen.push(chunk.length);
-      throw new Error('sink went away');
-    }),
-    /sink went away/u,
-  );
-  assert.equal(seen.length, 1, '第一次写入失败后不应继续写');
-});
-
 test('write: produces standard headers, CRC-32 values, and EOCD layout', () => {
   const entries = [
     { name: 'plain.txt', data: Buffer.from('hello zip\n') },
@@ -752,57 +670,6 @@ test('write: generated ZIP is extractable by PowerShell Expand-Archive', async (
     );
   } finally {
     await rm(path.dirname(zipPath), { recursive: true, force: true });
-  }
-});
-
-test('stream: a streamed archive is extractable by PowerShell Expand-Archive', async (t) => {
-  const powerShell = findPowerShell();
-  if (powerShell === null) {
-    t.diagnostic('未找到 PowerShell：跳过外部解压校验');
-    return;
-  }
-  const streamedBytes = randomBytes(64 * 1024, 77);
-  async function* chunks() {
-    for (let offset = 0; offset < streamedBytes.length; offset += 4096) {
-      yield streamedBytes.subarray(offset, Math.min(offset + 4096, streamedBytes.length));
-    }
-  }
-  const entries = [
-    { name: 'session.v4.jsonl', data: Buffer.from('{"type":"session","version":1}\n') },
-    { name: 'files/ab/cd/report.bin', data: chunks() },
-  ];
-  const directory = await mkdtemp(path.join(tmpdir(), 'dsh-session-port-xa-stream-'));
-  const zipPath = path.join(directory, 'streamed.zip');
-  const extractDirectory = path.join(directory, 'extracted');
-  try {
-    const file = await open(zipPath, 'w');
-    try {
-      await streamZipEntries(entries, async (chunk) => {
-        await file.write(chunk);
-      });
-    } finally {
-      await file.close();
-    }
-    await mkdir(extractDirectory, { recursive: true });
-    const result = spawnSync(
-      powerShell,
-      [
-        '-NoProfile',
-        '-NonInteractive',
-        '-Command',
-        `Expand-Archive -LiteralPath ${psQuote(zipPath)} -DestinationPath ${psQuote(extractDirectory)} -Force`,
-      ],
-      { encoding: 'utf8', timeout: 120000 },
-    );
-    assert.equal(
-      result.status,
-      0,
-      `Expand-Archive 失败（status=${String(result.status)}）：${String(result.stderr ?? '').trim()}`,
-    );
-    const extracted = await readFile(path.join(extractDirectory, 'files', 'ab', 'cd', 'report.bin'));
-    assert.ok(extracted.equals(streamedBytes), '外部工具解出的流式条目必须逐字节一致');
-  } finally {
-    await rm(directory, { recursive: true, force: true });
   }
 });
 
