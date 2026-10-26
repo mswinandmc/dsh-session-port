@@ -7,7 +7,7 @@
 
 | 工作流 | 触发 | 做什么 |
 | --- | --- | --- |
-| [`ci.yml`](.github/workflows/ci.yml) | push 到 `main`、每个 PR、手动 | Ubuntu + Windows × Node 22/24：manifest 预检、单元测试、ZIP 互操作测试、`npm pack --dry-run` |
+| [`ci.yml`](.github/workflows/ci.yml) | push 到 `main`/`dev`、每个 PR、手动 | Ubuntu + Windows × Node 22/24：manifest 预检、单元测试、ZIP 互操作测试、`npm pack --dry-run` |
 | [`release.yml`](.github/workflows/release.yml) | 推送 `v*` tag | 校验 tag 与 `package.json` 版本一致 → 跑全部测试 → 用 **npm trusted publishing（OIDC）** 发布 → 创建 GitHub Release |
 
 发版认证使用 npm trusted publishing：**不需要 NPM_TOKEN、不需要交互式 2FA**，npm 会为

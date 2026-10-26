@@ -1,11 +1,14 @@
 name: ci
 
-# Every push to main and every PR: the full suite on both operating systems this
-# plugin is used on (DSH runs the same client bundle in Electron on all three;
-# the ZIP and attachment code paths are platform-sensitive).
+# Every push to main or dev, and every PR: the full suite on both operating
+# systems this plugin is used on (DSH runs the same client bundle in Electron on
+# all three; the ZIP and attachment code paths are platform-sensitive).
+#
+# `dev` is the integration branch every change lands on first, so it needs the
+# same checks `main` gets before a release can fast-forward onto it.
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
   workflow_dispatch:
 
