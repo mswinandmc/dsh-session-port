@@ -25,7 +25,65 @@ npm 包页面 **Settings → Trusted Publishers** 添加：
 
 换仓库或改 workflow 文件名后需要重新配置；改名前请先在新环境里发布一次完成校验。
 
+## 分支与发布节奏（dev → 预览 → main → 正式）
+
+两个长期分支，各管一条线：
+
+| 分支 | 角色 | 说明 |
+| --- | --- | --- |
+| `dev` | 集成分支 | 所有改动先落这里；预览版和正式版的**版本号都在这里改** |
+| `main` | 发布线 | 只反映已发布的内容，**只接受来自 `dev` 的快进合并**，不直接改代码 |
+
+`main` 必须始终是 `dev` 的祖先（`git merge --ff-only dev`）。在 `main` 上直接提交会让两条线分叉，
+下次合并就得造一个合并提交，版本号的先后关系也会乱。
+
+### 发预览版（每次改动一个预览）
+
+预览号用 `-pre<N>` 后缀；tag 里带 `-`，`release.yml` 就会把它发到 npm 的 **`beta`**，`latest` 不动，
+也不会建正式 Release。
+
+```bash
+# 1) 在 dev 上把版本号推到下一个预览号（必须高于 npm 上已有的所有版本）
+npm version 0.2.2-pre3 --no-git-tag-version
+git commit -am "chore: preview 0.2.2-pre3"
+
+# 2) 打 tag 并推送 —— 剩下的交给 Actions
+git tag v0.2.2-pre3
+git push origin dev
+git push origin v0.2.2-pre3
+```
+
+装预览版的人用 `dsh plugin --profile web add dsh-session-port@beta`。
+
+### 发正式版
+
+```bash
+# 1) 在 dev 上把版本号改成正式号（去掉 -preN），提交
+npm version 0.2.2 --no-git-tag-version
+git commit -am "chore: release 0.2.2"
+
+# 2) main 只做快进合并，保证不分叉
+git switch main
+git merge --ff-only dev
+git push origin main
+
+# 3) 打 tag，触发正式发布（npm latest + GitHub Release）
+git tag v0.2.2
+git push origin v0.2.2
+git switch dev
+```
+
+### 号段约定
+
+- 版本号必须**单调递增**，且不能与 npm 上已发布的重复；重发同名版本会被 registry 拒绝。
+- 已发布 `0.2.1`（latest）和 `0.2.2-pre1`、`0.2.2-pre2`（beta），所以 `0.2.2` 这条线的下一个预览从
+  `0.2.2-pre3` 起，正式版收在 `0.2.2`。
+- 一旦 `0.2.2` 正式发出，就**不能**再发 `0.2.2-preN`；下一条功能线换核心号，例如 `0.3.0-pre1`。
+- 一个正式版对应同一核心号的一串预览；预览只是“这条线上还没定型的样子”，不是独立分支。
+
 ## 发版步骤
+
+分支节奏见上一节（改动 → `dev` → 预览 → `main` → 正式）；这一节只讲 tag 与 Actions 的关系。
 
 版本号遵循 SemVer，且只能有三段：`MAJOR.MINOR.PATCH`（可选 `-prerelease`）。
 `0.1.3.1` 这类四段写法不合法，npm 会拒绝发布。
