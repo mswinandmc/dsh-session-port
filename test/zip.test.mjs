@@ -565,6 +565,41 @@ test('stream: a failing sink rejects and stops the write', async () => {
   assert.equal(seen.length, 1, '第一次写入失败后不应继续写');
 });
 
+test('stream: a pre-aborted signal rejects before writing any entry', async () => {
+  const controller = new AbortController();
+  controller.abort(new Error('client gone'));
+  const seen = [];
+  await assert.rejects(
+    streamZipEntries(
+      [{ name: 'a.txt', data: Buffer.from('x'.repeat(10)) }],
+      async (chunk) => {
+        seen.push(chunk.length);
+      },
+      { signal: controller.signal },
+    ),
+    /client gone/u,
+  );
+  assert.deepEqual(seen, [], '取消后不应写出任何字节');
+});
+
+test('stream: an abort raised while streaming stops the producer', async () => {
+  const controller = new AbortController();
+  const seen = [];
+  async function* source() {
+    yield Buffer.alloc(4096, 1);
+    controller.abort(new Error('download cancelled'));
+    yield Buffer.alloc(4096, 2);
+  }
+  await assert.rejects(
+    streamZipEntries([{ name: 'a.bin', data: source() }], async (chunk) => {
+      seen.push(chunk.length);
+    }, { signal: controller.signal }),
+    /download cancelled/u,
+  );
+  assert.ok(seen.length > 0, '取消发生在流内时，已写出的字节保留');
+  assert.equal(controller.signal.aborted, true);
+});
+
 test('write: produces standard headers, CRC-32 values, and EOCD layout', () => {
   const entries = [
     { name: 'plain.txt', data: Buffer.from('hello zip\n') },

@@ -9,7 +9,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
@@ -774,6 +774,58 @@ test('export skips a file attachment it cannot open before writing its entry', a
   // The entry was skipped before its header, so the archive itself is still valid.
   const entries = readZipEntries(exported.data);
   assert.deepEqual(entries.map((entry) => entry.name), ['session.v4.jsonl']);
+});
+
+test('export plans a missing attachment as a warning before the first byte', async () => {
+  const digest = 'b'.repeat(64);
+  const missingEvents = [
+    { type: 'turn/start', seq: 0, time: 1, data: { turn: 0 } },
+    {
+      type: 'user/message',
+      seq: 1,
+      time: 2,
+      data: {
+        role: 'user',
+        id: 'm1',
+        source: { kind: 'user' },
+        content: [{ type: 'file', attachment: { attachmentId: `sha256:${digest}`, name: 'gone.bin', bytes: 3 } }],
+      },
+      surfaceOp: 'append',
+    },
+    { type: 'turn/end', seq: 2, time: 3, data: { turn: 0, reason: { kind: 'completed' } } },
+  ];
+  const { ctx } = fakeContext({
+    readSession: async () => ({ session: header, inheritedEventCount: 0, events: missingEvents }),
+    attachments: { fileHostPath: () => join(tmpdir(), 'session-port-absent.bin') },
+  });
+  const plan = await openSessionExport(ctx, { sessionId: header.id, includeDescendants: false });
+  // The route serializes this list into its warning header before writing the
+  // body, so the diagnostic has to exist here — not when the entry is reached.
+  assert.equal(plan.warnings.length, 1, `warnings: ${plan.warnings.join(' | ')}`);
+  assert.match(plan.warnings[0], /gone\.bin.*读取失败/u);
+
+  const chunks = [];
+  const written = await plan.writeTo(async (chunk) => {
+    chunks.push(Buffer.from(chunk));
+  });
+  assert.equal(written.entryCount, 1, '丢失的附件不应留下条目');
+  assert.deepEqual(readZipEntries(Buffer.concat(chunks)).map((entry) => entry.name), ['session.v4.jsonl']);
+});
+
+test('writeExportFile removes the partial file when the export is aborted', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'session-port-abort-'));
+  const controller = new AbortController();
+  controller.abort(new Error('导出被取消'));
+  try {
+    const { ctx } = fakeContext();
+    await assert.rejects(
+      writeExportFile(ctx, { sessionId: header.id, directory, signal: controller.signal }),
+      /导出被取消/u,
+    );
+    assert.deepEqual(readdirSync(directory), [], '取消后不应留下半成品归档');
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('readImportFile resolves relative paths and enforces the size cap', async () => {

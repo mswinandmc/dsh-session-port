@@ -96,6 +96,8 @@ dsh plugin --profile web remove dsh-session-port        # 卸载
 - 会话的 `cwd` 以当前工作区为准；原目录在本机不存在时不会被记录。
 - **导出是流式的**：归档逐条目写出，文件附件直接从磁盘流进压缩包，不会把整包和全部附件同时驻留内存；
   代价是下载/写出中途失败时得到的是不完整文件（浏览器下载会丢弃，工具写出会删掉半成品）。
+- **下载中断会取消导出**：关掉标签页/断开连接时，路由立刻中止生产、关闭已打开的附件流，
+  不会留下一个永远挂起的导出任务；代理/工具侧的取消（`exec.signal`）同样会中止导出并删掉半成品。
 
 ## 配置（`cordis.patch.yml` 的插件行）
 
@@ -123,7 +125,8 @@ dsh plugin --profile web remove dsh-session-port        # 卸载
 - `lib/zip.js`：无依赖 ZIP 读写（基于 `node:zlib`；读取带解压上限，写入支持增量流式 + 背压，
   流式条目的字节从磁盘/服务直接进入压缩包），有单测。
 - `lib/attachments.js`：把附件引用解析成「打开器」，导出时一次只读一个附件；本地存储的文件
-  以流的形式写入压缩包，读取失败在写入该条目之前降级为告警。
+  在计划阶段先 stat 预检，缺失/不可读的附件在响应头发出之前就降级为告警，其余读取失败在写入
+  该条目之前降级为告警。
 - `client.js`：没有 `@deepseek-ai/*` 运行时依赖的客户端半边，只用 `react` 与宿主主题变量。
   导入入口注册成一行全局面板（`main` 键 + `sidebar.panellist` 行），所以侧栏里紧贴
   「插件」下方、并与「插件 / 日程」一样是一行导航；点开是 `session-port-import` 导入面板。
@@ -132,10 +135,11 @@ dsh plugin --profile web remove dsh-session-port        # 卸载
 
 ```bash
 cd dsh-session-port
-node --test test/format.test.mjs   # 15 项：JSONL 序列化/解析、附件引用、投递标记、继承标记、文件名
-node --test test/host.test.mjs     # 25 项：导出→导入往返、子会话打包、fork 标记抹平、写后校验、失败路径
+node --test test/format.test.mjs   # 16 项：JSONL 序列化/解析、附件引用、投递标记、继承标记、文件名
+node --test test/host.test.mjs     # 37 项：导出→导入往返、子会话打包、fork 标记抹平、写后校验、失败与取消路径
 node --test test/client.test.mjs   #  7 项：浏览器半边注册（面板行 + 插件行）、导入面板渲染（无浏览器沙箱）
-node --test test/zip.test.mjs      # 34 项：ZIP 读写、data descriptor 流式 zip、损坏输入
+node --test test/abort.test.mjs    #  5 项：断开/取消时的背压等待、稳定的取消错误码
+node --test test/zip.test.mjs      # 45 项：ZIP 读写、data descriptor 流式 zip、取消与损坏输入
 ```
 
 已在本机完成的端到端验证：

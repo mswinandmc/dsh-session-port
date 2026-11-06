@@ -18,8 +18,7 @@
  * @module dsh-session-port
  */
 
-import { once } from 'node:events';
-
+import { throwIfAborted, waitForDrain } from './lib/abort.js';
 import { SessionPortFormatError } from './lib/format.js';
 import {
   DEFAULT_MAX_IMPORT_BYTES,
@@ -156,6 +155,11 @@ async function dispatchRequest(ctx, settings, connection, req, res) {
     }
     sendJson(res, 404, { ok: false, code: 'not-found', message: `没有这个接口：${method} ${path}` });
   } catch (error) {
+    // A request whose client already left has no response left to answer.
+    if (res.destroyed || res.writableEnded) {
+      res.destroy();
+      return;
+    }
     sendJson(res, statusOf(error), { ok: false, code: codeOf(error), message: errorText(error) });
   }
 }
@@ -180,42 +184,62 @@ async function handleExport(ctx, settings, url, res) {
   const format = url.searchParams.get('format') === 'jsonl' ? 'jsonl' : 'zip';
   const includeAttachments = url.searchParams.get('attachments') !== '0' && settings.includeAttachments;
   const includeDescendants = url.searchParams.get('subagents') !== '0';
-  const plan = await openSessionExport(ctx, { sessionId, format, includeAttachments, includeDescendants });
-  const headers = {
-    'content-type': format === 'jsonl' ? 'application/jsonl; charset=utf-8' : 'application/zip',
-    'cache-control': 'no-store',
-    'content-disposition': 'attachment; filename="session-export.zip"',
-    // Header values are ASCII only, so the UTF-8 name travels percent-encoded.
-    'x-session-port-filename': encodeURIComponent(plan.filename),
-    'x-session-port-warnings': encodeURIComponent(JSON.stringify(plan.warnings ?? [])),
-    'x-session-port-events': String(plan.eventCount),
+  // A closed browser tab produces neither `drain` nor `error` on the response.
+  // Aborting from `close` stops the producer and unblocks a pending backpressure
+  // wait, so a cancelled download cannot leave an export task (and its open
+  // attachment streams) pending for the life of the process.
+  const controller = new AbortController();
+  const onClose = () => {
+    if (!res.writableFinished) controller.abort(new Error('客户端在导出过程中断开了连接'));
   };
-  // The status line and headers are written together with the first body chunk:
-  // a failure that happens before that still gets a normal JSON error response
-  // instead of an empty 200 the browser would save as a broken file.
-  let started = false;
+  res.once('close', onClose);
   try {
-    await plan.writeTo(async (chunk) => {
-      if (!started) {
-        started = true;
-        res.writeHead(200, headers);
+    const signal = controller.signal;
+    const plan = await openSessionExport(ctx, { sessionId, format, includeAttachments, includeDescendants, signal });
+    const headers = {
+      'content-type': format === 'jsonl' ? 'application/jsonl; charset=utf-8' : 'application/zip',
+      'cache-control': 'no-store',
+      'content-disposition': 'attachment; filename="session-export.zip"',
+      // Header values are ASCII only, so the UTF-8 name travels percent-encoded.
+      'x-session-port-filename': encodeURIComponent(plan.filename),
+      'x-session-port-warnings': encodeURIComponent(JSON.stringify(plan.warnings ?? [])),
+      'x-session-port-events': String(plan.eventCount),
+    };
+    // The status line and headers are written together with the first body chunk:
+    // a failure that happens before that still gets a normal JSON error response
+    // instead of an empty 200 the browser would save as a broken file.
+    let started = false;
+    try {
+      await plan.writeTo(async (chunk) => {
+        throwIfAborted(signal);
+        if (!started) {
+          started = true;
+          res.writeHead(200, headers);
+        }
+        if (res.write(chunk)) return;
+        await waitForDrain(res, signal);
+      });
+      if (!started) res.writeHead(200, headers);
+      res.end();
+    } catch (error) {
+      if (signal.aborted) {
+        // Nobody is listening any more; closing the response is all that is left.
+        if (started) res.destroy();
+        return;
       }
-      if (res.write(chunk)) return;
-      await once(res, 'drain');
-    });
-    if (!started) res.writeHead(200, headers);
-    res.end();
-  } catch (error) {
-    ctx.logger?.warn?.(
-      `session-port: export stream failed: ${error instanceof Error ? error.message : String(error)}`,
-    );
-    if (started) {
-      // The browser already reads an archive: abort the response so the
-      // download fails visibly instead of being saved truncated.
-      res.destroy(error instanceof Error ? error : undefined);
-      return;
+      ctx.logger?.warn?.(
+        `session-port: export stream failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      if (started) {
+        // The browser already reads an archive: abort the response so the
+        // download fails visibly instead of being saved truncated.
+        res.destroy(error instanceof Error ? error : undefined);
+        return;
+      }
+      sendJson(res, 500, { ok: false, code: 'internal', message: error instanceof Error ? error.message : String(error) });
     }
-    sendJson(res, 500, { ok: false, code: 'internal', message: error instanceof Error ? error.message : String(error) });
+  } finally {
+    res.off('close', onClose);
   }
 }
 
@@ -340,6 +364,9 @@ function registerTool(ctx, settings) {
               format: 'zip',
               includeAttachments: settings.includeAttachments,
               directory: settings.exportDirectory ?? defaultExportDirectory(),
+              // The tool's own cancellation also closes the file, so a cancelled
+              // turn never leaves a half-written archive behind.
+              signal: exec?.signal,
             });
             return exportToolText(written);
           }
