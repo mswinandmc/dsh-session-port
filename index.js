@@ -25,9 +25,13 @@ import {
   defaultExportDirectory,
   detectFormatVersion,
   importSession,
+  listUndoableImports,
   openSessionExport,
   readImportFile,
+  sameSessionId,
   servicesOf,
+  undoImportedSession,
+  watchPendingUndos,
   writeExportFile,
 } from './lib/host.js';
 
@@ -47,6 +51,7 @@ const ROUTE_PREFIX = '/session-port';
  */
 export function apply(ctx, config) {
   const settings = resolveSettings(config);
+  ctx.effect(() => watchPendingUndos(ctx), 'session-port: deferred undo watch');
   registerRoutes(ctx, settings);
   registerTool(ctx, settings);
 }
@@ -151,6 +156,15 @@ async function dispatchRequest(ctx, settings, connection, req, res) {
     }
     if (path === `${ROUTE_PREFIX}/import` && method === 'POST') {
       await handleImport(ctx, settings, url, req, res);
+      return;
+    }
+    if (path === `${ROUTE_PREFIX}/imports` && method === 'GET') {
+      sendJson(res, 200, { ok: true, imports: listUndoableImports(ctx) });
+      return;
+    }
+    if (path === `${ROUTE_PREFIX}/undo` && method === 'POST') {
+      const result = await undoImportedSession(ctx, { sessionId: url.searchParams.get('sessionId') ?? '' });
+      sendJson(res, 200, { ok: true, ...result });
       return;
     }
     sendJson(res, 404, { ok: false, code: 'not-found', message: `没有这个接口：${method} ${path}` });
@@ -298,6 +312,8 @@ function statusOf(error) {
   if (code === 'unavailable') return 503;
   if (code === 'not-found' || code === 'file-missing') return 404;
   if (code === 'too-large') return 413;
+  if (code === 'not-imported') return 403;
+  if (code === 'session-live') return 409;
   if (code === 'internal') return 500;
   return 400;
 }
@@ -330,6 +346,7 @@ function registerTool(ctx, settings) {
           'Move one DSH conversation in or out as a session archive.',
           'action=export writes the CURRENT session (committed log plus referenced attachments) to a ZIP under a plugin-owned folder and returns its path.',
           'action=import reads an archive produced by this plugin or by DSH\'s built-in session-log export and creates a NEW session in the current working directory; the user opens it from the session list.',
+          'action=undo deletes a session this plugin imported during the current run (workspace membership, storage directory, projection cache) — never a pre-existing one.',
           'Import never modifies or deletes an existing session.',
         ].join(' '),
         parameters: {
@@ -337,12 +354,16 @@ function registerTool(ctx, settings) {
           properties: {
             action: {
               type: 'string',
-              enum: ['export', 'import'],
-              description: 'export: save the current session as a ZIP. import: create a new session from a ZIP or JSONL archive.',
+              enum: ['export', 'import', 'undo'],
+              description: 'export: save the current session as a ZIP. import: create a new session from a ZIP or JSONL archive. undo: delete a session this plugin imported in the current run.',
             },
             path: {
               type: 'string',
               description: 'Import only: absolute archive path, or a path relative to the current session directory.',
+            },
+            sessionId: {
+              type: 'string',
+              description: 'Undo only: the session id the import returned.',
             },
           },
           required: ['action'],
@@ -384,7 +405,29 @@ function registerTool(ctx, settings) {
             });
             return importToolText(result);
           }
-          throw new Error('session_port: action 必须是 "export" 或 "import"');
+          if (args?.action === 'undo') {
+            const sessionId = typeof args.sessionId === 'string' ? args.sessionId.trim() : '';
+            if (sessionId === '') throw new Error('session_port: undo 需要 sessionId 参数（导入返回的会话 id）');
+            // Refuse to undo the session this call runs in: the tool result has
+            // to be appended to that very log, and undoing it would cancel the
+            // calling agent and delete the log under its own write.
+            const selfId = exec?.agent?.session?.id ?? exec?.agent?.id;
+            if (typeof selfId === 'string' && selfId !== '' && sameSessionId(selfId, sessionId)) {
+              return [
+                `refused: ${sessionId} 是本次调用所在的会话，不能在自身内部撤销。`,
+                '',
+                '工具结果必须写回该会话的日志；撤销会先取消调用者并删除该日志。',
+                '请在 Web 界面的「导入会话」面板的导入历史中撤销它。',
+              ].join('\n');
+            }
+            const undone = await undoImportedSession(ctx, { sessionId, signal: exec?.signal });
+            const lines = undone.deferred === true
+              ? [`已登记撤销：会话 ${undone.sessionId} 关闭后将自动删除`]
+              : [`已撤销导入并删除会话 ${undone.sessionId}`];
+            for (const warning of undone.warnings ?? []) lines.push(`注意：${warning}`);
+            return lines.join('\n');
+          }
+          throw new Error('session_port: action 必须是 "export"、"import" 或 "undo"');
         },
       }),
     'session-port: agent tool',

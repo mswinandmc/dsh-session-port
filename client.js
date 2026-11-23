@@ -49,6 +49,9 @@ window.__ModuleLoader__.load({
       'import.failed': '导入失败',
       'import.openFallback': '会话已导入。请在侧边栏会话列表中找到并打开它。',
       'import.panelHint': '把会话压缩包（.zip）或会话日志（.jsonl）拖到这里，或者选择一个文件。',
+      'import.workspace': '导入到工作区：',
+      'import.workspaceHint': '不会预选：请先点选一个工作区，再选择文件导入。',
+      'import.pickWorkspace': '请先在上方选择要导入到的工作区，然后再选择文件。',
       'import.choose': '选择文件…',
       'import.dropActive': '松开鼠标即可导入',
       'import.working': '正在导入 {name}…',
@@ -57,6 +60,15 @@ window.__ModuleLoader__.load({
       'import.resultCounts': '{events} 条事件 · {attachments} 个附件',
       'import.open': '打开会话',
       'import.another': '再导一个',
+      'import.undo': '撤销导入',
+      'import.undoing': '正在撤销…',
+      'import.undoDone': '已撤销：导入的会话、其工作区归属与投影缓存已删除。',
+      'import.undoDeferred': '该会话正在运行；已登记撤销，它被关闭后将自动完成删除。',
+      'import.undoPending': '待关闭后撤销',
+      'import.lastImport': '上次导入：',
+      'import.history': '导入历史（本次运行）',
+      'import.historyEmpty': '还没有导入记录。导入一次后，这里会出现对应记录和撤销按钮。',
+      'import.historyMeta': '{time} · {events} 条事件',
       'import.retry': '重新选择',
       'import.note': '与 DSH 自带「下载会话日志」格式互通；导入只会新增会话，绝不覆盖已有会话。',
       'common.dismiss': '关闭',
@@ -78,6 +90,9 @@ window.__ModuleLoader__.load({
       'import.failed': 'Import failed',
       'import.openFallback': 'The session was imported. Find and open it in the sidebar session list.',
       'import.panelHint': 'Drop a session archive (.zip) or session log (.jsonl) here, or choose a file.',
+      'import.workspace': 'Import into workspace:',
+      'import.workspaceHint': 'Nothing is preselected: pick a workspace first, then choose a file to import.',
+      'import.pickWorkspace': 'Pick the workspace to import into above before choosing a file.',
       'import.choose': 'Choose file…',
       'import.dropActive': 'Release to import',
       'import.working': 'Importing {name}…',
@@ -86,6 +101,15 @@ window.__ModuleLoader__.load({
       'import.resultCounts': '{events} events · {attachments} attachments',
       'import.open': 'Open session',
       'import.another': 'Import another',
+      'import.undo': 'Undo import',
+      'import.undoing': 'Undoing…',
+      'import.undoDone': 'Undone: the imported session, its workspace membership, and its projection cache were deleted.',
+      'import.undoDeferred': 'The session is still open; the undo is queued and completes automatically once it closes.',
+      'import.undoPending': 'Queued: undo on close',
+      'import.lastImport': 'Last import: ',
+      'import.history': 'Import history (this run)',
+      'import.historyEmpty': 'No imports yet. After one import, its record and undo button appear here.',
+      'import.historyMeta': '{time} · {events} events',
       'import.retry': 'Choose again',
       'import.note': 'Interoperable with DSH\'s own session-log export. Import only ever adds a session; it never overwrites one.',
       'common.dismiss': 'Dismiss',
@@ -461,9 +485,22 @@ window.__ModuleLoader__.load({
      * Import one archive in the main column: drop a file or browse for one, then
      * reveal the new session. This page is the owner of the sidebar "导入会话"
      * row, registered as the main-slot key `session-port-import`.
-     * @param {{t: Function, importArchive: Function, openImported: Function}} props - slot props plus injected operations.
+     *
+     * Nothing is preselected when several workspaces exist: the user must pick
+     * one before an import starts, so a hasty click cannot land the session in
+     * the wrong workspace. A single workspace preselects itself (no ambiguity).
+     * @param {{t: Function, importArchive: Function, undoImport: Function, listImports: Function, openImported: Function, workspaces?: Array<object>, initialTarget?: object | null, initialHistory?: Array<object>}} props - slot props plus injected operations.
      */
-    function SessionImportPanel({ t, importArchive, openImported }) {
+    function SessionImportPanel({
+      t,
+      importArchive,
+      undoImport,
+      listImports,
+      openImported,
+      workspaces = [],
+      initialTarget = undefined,
+      initialHistory = undefined,
+    }) {
       const tr = translatorOf(t);
       const [phase, setPhase] = React.useState('idle');
       const [dragging, setDragging] = React.useState(false);
@@ -472,16 +509,63 @@ window.__ModuleLoader__.load({
       const [warnings, setWarnings] = React.useState([]);
       const [result, setResult] = React.useState(null);
       const [opening, setOpening] = React.useState(false);
+      const [undoingId, setUndoingId] = React.useState(null);
+      const [history, setHistory] = React.useState(
+        Array.isArray(initialHistory) ? [...initialHistory] : [],
+      );
       const inputRef = React.useRef(null);
+
+      /** Reload the import history from the Host, newest first. */
+      async function loadHistory() {
+        try {
+          const imports = await listImports();
+          const items = Array.isArray(imports)
+            ? [...imports].sort((left, right) => (right.importedAt ?? 0) - (left.importedAt ?? 0))
+            : [];
+          setHistory(items);
+        } catch {
+          // The history is supplementary; keep the previous rows on failure.
+        }
+      }
+
+      React.useEffect(() => {
+        void loadHistory();
+      }, []);
+      // No preselection among several workspaces: the user must choose one
+      // before importing. A single workspace preselects itself; initialTarget
+      // overrides both (tests).
+      const [target, setTarget] = React.useState(() => {
+        if (initialTarget !== undefined) return initialTarget;
+        if (Array.isArray(workspaces) && workspaces.length === 1) {
+          return { cwd: workspaces[0].path, workspaceId: workspaces[0].workspaceId };
+        }
+        return null;
+      });
+      const hasTarget = target !== null && typeof target.cwd === 'string' && target.cwd !== '';
+      const selectedRowRef = React.useRef(null);
+      // An alphabetically ordered list may start well before the selected row;
+      // bring it into view once, without scrolling the surrounding page.
+      React.useLayoutEffect(() => {
+        selectedRowRef.current?.scrollIntoView?.({ block: 'nearest' });
+      }, []);
       const busy = phase === 'busy';
 
       function pick() {
         if (busy) return;
+        if (!hasTarget) {
+          setMessage(tr('import.pickWorkspace'));
+          return;
+        }
         inputRef.current?.click();
       }
 
       async function accept(file) {
         if (busy || file === undefined || file === null) return;
+        if (!hasTarget) {
+          setFilename(file.name ?? '');
+          setMessage(tr('import.pickWorkspace'));
+          return;
+        }
         if (file.size === 0) {
           setPhase('error');
           setMessage(tr('error.empty'));
@@ -494,10 +578,11 @@ window.__ModuleLoader__.load({
         setOpening(false);
         setPhase('busy');
         try {
-          const payload = await importArchive(file);
+          const payload = await importArchive(file, target);
           setResult(payload ?? null);
           setWarnings(Array.isArray(payload?.warnings) ? payload.warnings : []);
           setPhase('done');
+          void loadHistory();
         } catch (error) {
           setPhase('error');
           setMessage(errorMessageOf(error, tr));
@@ -552,6 +637,32 @@ window.__ModuleLoader__.load({
         setWarnings([]);
         setResult(null);
         setOpening(false);
+      }
+
+      /** Undo one imported session (default: the one just imported) via the Host. */
+      async function undo(sessionId) {
+        const id = typeof sessionId === 'string' && sessionId !== ''
+          ? sessionId
+          : typeof result?.sessionId === 'string'
+            ? result.sessionId
+            : undefined;
+        if (id === undefined || id === '' || undoingId !== null) return;
+        setUndoingId(id);
+        setMessage('');
+        try {
+          const payload = await undoImport(id);
+          if (payload.deferred === true) {
+            setMessage(tr('import.undoDeferred'));
+          } else {
+            if (phase === 'done' && result?.sessionId === id) reset();
+            setMessage(tr('import.undoDone'));
+          }
+          await loadHistory();
+        } catch (error) {
+          setMessage(errorMessageOf(error, tr));
+        } finally {
+          setUndoingId(null);
+        }
       }
 
       const primaryButton = {
@@ -623,6 +734,66 @@ window.__ModuleLoader__.load({
             h('h1', { style: { margin: 0, font: `600 20px/28px ${T.font}` } }, tr('import.title')),
             h('p', { style: { margin: 0, font: `13px/20px ${T.font}`, color: T.labelSecondary } }, tr('import.panelHint')),
           ),
+          Array.isArray(workspaces) && workspaces.length >= 1
+            ? h(
+              'div',
+              { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+              h('span', { style: { font: `600 13px/20px ${T.font}`, color: T.labelPrimary } }, tr('import.workspace')),
+              h(
+                'div',
+                {
+                  role: 'radiogroup',
+                  'aria-label': tr('import.workspace'),
+                  style: {
+                    display: 'flex',
+                    flexDirection: 'column',
+                    maxHeight: 240,
+                    overflowY: 'auto',
+                    border: `1px solid ${T.border}`,
+                    borderRadius: T.radiusLg,
+                    background: T.bgLayer1,
+                  },
+                },
+                orderedWorkspaceChoices(workspaces).map((item, index) => {
+                  const selected = target !== null && target.workspaceId === item.workspaceId;
+                  const name = workspaceNameOf(item);
+                  return h('button', {
+                    key: item.workspaceId,
+                    type: 'button',
+                    role: 'radio',
+                    ref: selected ? selectedRowRef : undefined,
+                    'aria-checked': selected ? 'true' : 'false',
+                    disabled: busy,
+                    onClick: () => setTarget({ cwd: item.path, workspaceId: item.workspaceId }),
+                    style: {
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'flex-start',
+                      gap: 2,
+                      width: '100%',
+                      padding: '8px 14px',
+                      border: 'none',
+                      borderTop: index === 0 ? 'none' : `1px solid ${T.border}`,
+                      borderLeft: `3px solid ${selected ? T.brand : 'transparent'}`,
+                      background: selected ? T.bgLayer2 : 'transparent',
+                      color: T.labelPrimary,
+                      font: `500 13px/18px ${T.font}`,
+                      textAlign: 'left',
+                      cursor: busy ? 'progress' : 'pointer',
+                    },
+                  },
+                    h('span', { style: { color: T.labelPrimary } }, name ?? item.path),
+                    name !== undefined
+                      ? h('span', {
+                          style: { font: `12px/16px ${T.font}`, color: T.labelSecondary },
+                        }, item.path)
+                      : null,
+                  );
+                }),
+              ),
+              h('span', { style: { font: `12px/18px ${T.font}`, color: T.labelSecondary } }, tr('import.workspaceHint')),
+            )
+            : null,
           h(
             'div',
             {
@@ -648,7 +819,8 @@ window.__ModuleLoader__.load({
                 background: dragging ? T.bgLayer2 : T.bgLayer1,
                 textAlign: 'center',
                 cursor: busy ? 'progress' : 'pointer',
-                transition: 'border-color 120ms ease, background 120ms ease',
+                opacity: busy || hasTarget || !Array.isArray(workspaces) || workspaces.length < 2 ? 1 : 0.55,
+                transition: 'border-color 120ms ease, background 120ms ease, opacity 120ms ease',
               },
             },
             h(
@@ -666,7 +838,20 @@ window.__ModuleLoader__.load({
                   color: dragging ? T.brand : T.labelSecondary,
                 },
               },
-              h(Icon, { kind: 'import', size: 22 }),
+              busy
+                ? h('span', {
+                    'aria-hidden': 'true',
+                    className: 'session-port-spin',
+                    style: {
+                      width: 20,
+                      height: 20,
+                      borderRadius: '50%',
+                      border: `2.5px solid ${T.border}`,
+                      borderTopColor: T.brand,
+                      animation: 'session-port-spin 0.8s linear infinite',
+                    },
+                  })
+                : h(Icon, { kind: 'import', size: 22 }),
             ),
             h('span', { style: { font: `600 14px/22px ${T.font}`, color: T.labelPrimary } }, zoneHeadline),
             h('span', { style: { font: `12px/18px ${T.font}`, color: T.labelSecondary } }, tr('import.hint')),
@@ -746,8 +931,120 @@ window.__ModuleLoader__.load({
                     opening ? tr('import.busy') : tr('import.open'),
                   ),
                   h('button', { type: 'button', onClick: reset, style: secondaryButton }, tr('import.another')),
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      onClick: () => undo(result.sessionId),
+                      disabled: undoingId !== null,
+                      style: {
+                        ...secondaryButton,
+                        opacity: undoingId !== null ? 0.6 : 1,
+                        cursor: undoingId !== null ? 'progress' : 'pointer',
+                      },
+                    },
+                    undoingId === result?.sessionId ? tr('import.undoing') : tr('import.undo'),
+                  ),
                 ),
               )
+            : null,
+          h(
+            'div',
+            { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+            h('span', { style: { font: `600 13px/20px ${T.font}`, color: T.labelPrimary } }, tr('import.history')),
+            history.length === 0
+              ? h(
+                'span',
+                { style: { font: `12px/18px ${T.font}`, color: T.labelSecondary } },
+                tr('import.historyEmpty'),
+              )
+              : h(
+                'div',
+                {
+                  style: {
+                    display: 'flex',
+                    flexDirection: 'column',
+                    border: `1px solid ${T.border}`,
+                    borderRadius: T.radiusLg,
+                    background: T.bgLayer1,
+                    overflow: 'hidden',
+                  },
+                },
+                history.map((item, index) =>
+                  h(
+                    'div',
+                    {
+                      key: item.sessionId,
+                      style: {
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        padding: '8px 14px',
+                        borderTop: index === 0 ? 'none' : `1px solid ${T.border}`,
+                      },
+                    },
+                    h(
+                      'div',
+                      {
+                        style: {
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 2,
+                          flex: 1,
+                          minWidth: 0,
+                          textAlign: 'left',
+                        },
+                      },
+                      h(
+                        'span',
+                        {
+                          style: {
+                            font: `500 13px/18px ${T.font}`,
+                            color: T.labelPrimary,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          },
+                        },
+                        typeof item.title === 'string' && item.title !== '' ? item.title : item.sessionId,
+                      ),
+                      h(
+                        'span',
+                        { style: { font: `12px/16px ${T.font}`, color: T.labelSecondary } },
+                        tr('import.historyMeta', {
+                          time: formatImportTime(item.importedAt),
+                          events: typeof item.eventCount === 'number' ? item.eventCount : 0,
+                        }),
+                      ),
+                    ),
+                    h(
+                      'button',
+                      {
+                        type: 'button',
+                        onClick: () => undo(item.sessionId),
+                        disabled: undoingId !== null || item.pendingUndo === true,
+                        style: {
+                          ...secondaryButton,
+                          height: 28,
+                          padding: '0 10px',
+                          opacity: undoingId !== null || item.pendingUndo === true ? 0.6 : 1,
+                          cursor: undoingId !== null || item.pendingUndo === true ? 'progress' : 'pointer',
+                        },
+                      },
+                      item.pendingUndo === true
+                        ? tr('import.undoPending')
+                        : undoingId === item.sessionId ? tr('import.undoing') : tr('import.undo'),
+                    ),
+                  ),
+                ),
+              ),
+          ),
+          phase === 'idle' && message !== ''
+            ? h(
+              'div',
+              { role: 'status', style: cardOf(T.border) },
+              h('span', { style: { font: `13px/20px ${T.font}`, color: T.labelPrimary } }, message),
+            )
             : null,
           h('p', { style: { margin: 0, font: `12px/18px ${T.font}`, color: T.labelSecondary } }, tr('import.note')),
         ),
@@ -781,8 +1078,90 @@ window.__ModuleLoader__.load({
     }
 
     /** Upload one archive and return the Host's creation result. */
-    async function importArchive(ctx, file) {
-      const target = importTargetOf(ctx);
+    /** Display name of one workspace choice, when its record carries one. */
+    function workspaceNameOf(item) {
+      const name = typeof item.title === 'string' && item.title.trim() !== ''
+        ? item.title.trim()
+        : typeof item.name === 'string' && item.name.trim() !== ''
+          ? item.name.trim()
+          : undefined;
+      return name !== undefined && name !== item.path ? name : undefined;
+    }
+
+    /** Workspaces in case-insensitive name order (path when untitled), path as the tie-breaker. */
+    function orderedWorkspaceChoices(list) {
+      const keyOf = (item) => (workspaceNameOf(item) ?? item.path).toLowerCase();
+      return [...list].sort((left, right) => {
+        const a = keyOf(left);
+        const b = keyOf(right);
+        if (a !== b) return a < b ? -1 : 1;
+        return left.path < right.path ? -1 : left.path > right.path ? 1 : 0;
+      });
+    }
+
+    /** Registered workspaces an import may target, with their title/name facts. */
+    function workspaceChoicesOf(ctx) {
+      try {
+        const list = ctx.get('workspaces')?.list?.getSnapshot?.();
+        const items = Array.isArray(list?.items) ? list.items : [];
+        return items
+          .filter((item) => typeof item.path === 'string' && item.path !== '' && typeof item.workspaceId === 'string')
+          .map((item) => ({
+            workspaceId: item.workspaceId,
+            path: item.path,
+            ...(typeof item.title === 'string' ? { title: item.title } : {}),
+            ...(typeof item.name === 'string' ? { name: item.name } : {}),
+          }));
+      } catch {
+        return [];
+      }
+    }
+
+    /** Locale time for one import-history row, tolerating odd clocks. */
+    function formatImportTime(value) {
+      const date = typeof value === 'number' && Number.isFinite(value) ? new Date(value) : undefined;
+      try {
+        return date === undefined || Number.isNaN(date.getTime()) ? '—' : date.toLocaleString();
+      } catch {
+        return '—';
+      }
+    }
+
+    /** Ask the Host to undo one import made by this plugin process. */
+    async function undoImport(ctx, sessionId) {
+      const response = await fetch(hostUrl(`/undo?sessionId=${encodeURIComponent(String(sessionId ?? ''))}`), {
+        method: 'POST',
+        headers: { accept: 'application/json' },
+      });
+      let payload = null;
+      try {
+        payload = await response.json();
+      } catch {
+        payload = null;
+      }
+      if (!response.ok || payload?.ok !== true) {
+        throw new Error(payload?.message ?? `撤销导入失败（HTTP ${response.status}）`);
+      }
+      return payload;
+    }
+
+    /** The imports this plugin process created, as the Host sees them. */
+    async function listImports(ctx) {
+      const response = await fetch(hostUrl('/imports'), { headers: { accept: 'application/json' } });
+      let payload = null;
+      try {
+        payload = await response.json();
+      } catch {
+        payload = null;
+      }
+      if (!response.ok || payload?.ok !== true) {
+        throw new Error(payload?.message ?? `读取导入历史失败（HTTP ${response.status}）`);
+      }
+      return Array.isArray(payload.imports) ? payload.imports : [];
+    }
+
+    async function importArchive(ctx, file, override) {
+      const target = override ?? importTargetOf(ctx);
       const params = new URLSearchParams();
       params.set('filename', file.name ?? 'session.zip');
       if (typeof target.cwd === 'string' && target.cwd !== '') params.set('cwd', target.cwd);
@@ -823,12 +1202,36 @@ window.__ModuleLoader__.load({
     const inject = ['slots', 'locale'];
 
     /**
+     * One-time keyframes for the busy spinner, including a reduced-motion
+     * override. Inline styles cannot carry keyframes, so the sheet is appended
+     * once per page; a missing document head (tests, non-browser hosts) is fine.
+     */
+    function injectSpinnerStyle() {
+      if (typeof document === 'undefined' || document.head === undefined || document.head === null) return;
+      if (typeof document.getElementById === 'function' && document.getElementById('session-port-style') !== null) {
+        return;
+      }
+      const style = document.createElement('style');
+      style.id = 'session-port-style';
+      style.textContent = [
+        '@keyframes session-port-spin { to { transform: rotate(360deg); } }',
+        '@media (prefers-reduced-motion: reduce) { .session-port-spin { animation: none !important; } }',
+      ].join('\n');
+      document.head.appendChild(style);
+    }
+
+    /**
      * Client plugin body: dictionaries first, then the two registrations. Each
      * registration is guarded so a Host without the slot (or refusing it) keeps
      * the page booting.
      * @param {object} ctx - client root context.
      */
     function apply(ctx) {
+      try {
+        injectSpinnerStyle();
+      } catch (error) {
+        console.warn('session-port: spinner style injection failed:', error);
+      }
       try {
         ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'session-port: dictionaries');
       } catch (error) {
@@ -859,8 +1262,11 @@ window.__ModuleLoader__.load({
               key: PANEL_ID,
               locale: NS,
               inject: () => ({
-                importArchive: (file) => importArchive(ctx, file),
+                importArchive: (file, target) => importArchive(ctx, file, target),
+                undoImport: (sessionId) => undoImport(ctx, sessionId),
+                listImports: () => listImports(ctx),
                 openImported: (sessionId) => openImported(ctx, sessionId),
+                workspaces: workspaceChoicesOf(ctx),
               }),
             },
             SessionImportPanel,

@@ -9,7 +9,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
@@ -22,15 +22,21 @@ import {
   detectFormatVersion,
   exportSession,
   importSession,
+  listUndoableImports,
   openSessionExport,
   readImportFile,
   servicesOf,
+  undoImportedSession,
+  watchPendingUndos,
   writeExportFile,
 } from '../lib/host.js';
 import { readZipEntries, writeZipEntries } from '../lib/zip.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtures = join(here, 'fixtures');
+
+// Isolate every DSH_HOME-backed plugin state (the import-registry mirror).
+process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'session-port-home-'));
 
 const cwd = process.cwd();
 const imageRef = {
@@ -655,6 +661,263 @@ test('importSession refuses non-contiguous event logs before writing anything', 
   await assert.rejects(importSession(target.ctx, { buffer, cwd }), (error) => error.code === 'event-seq');
   assert.equal(target.committed.headers.length, 0);
   assert.equal(target.committed.batches.length, 0);
+});
+
+/** A context whose persistence keeps real files under a temp root, for undo. */
+function undoHarness(options = {}) {
+  // Each harness gets its own DSH_HOME (registry mirror, projection cache) so
+  // the importSession tests above cannot leak registry rows into it; the
+  // restart test passes one shared home across two harnesses.
+  const home = options.home ?? mkdtempSync(join(tmpdir(), 'session-port-undo-home-'));
+  process.env.DSH_HOME = home;
+  const storageRoot = mkdtempSync(join(tmpdir(), 'session-port-undo-'));
+  const cacheRoot = mkdtempSync(join(tmpdir(), 'session-port-undo-cache-'));
+  const created = [];
+  const attached = [];
+  const detached = [];
+  const listeners = new Map();
+  const workspace = {
+    id: 'workspace-1',
+    async attachSession(sessionId) {
+      attached.push(sessionId);
+    },
+    async detachSession(sessionId) {
+      detached.push(sessionId);
+    },
+  };
+  const cancelled = [];
+  const emitLog = [];
+  const liveSessions = new Map();
+  const liveAgents = new Map();
+  const markLive = (sessionId) => {
+    liveSessions.set(sessionId, {
+      id: sessionId,
+      detach: () => {
+        if (options.failDetach === true) throw new Error('detach refused');
+        liveSessions.delete(sessionId);
+      },
+    });
+    liveAgents.set(sessionId, {
+      id: sessionId,
+      agent: {
+        id: sessionId,
+        session: { id: sessionId },
+        cancel: (reason) => cancelled.push(reason),
+        whenIdle: async () => {},
+      },
+      detach: () => liveAgents.delete(sessionId),
+    });
+  };
+  const services = {
+    sessionQuery: {
+      async readSession(sessionId) {
+        const header = created.find((entry) => entry.id === sessionId);
+        if (header === undefined) {
+          const error = new Error(`missing session ${sessionId}`);
+          error.code = 'session/not-found';
+          throw error;
+        }
+        return { session: header, events: [] };
+      },
+      async listSessions() {
+        return [];
+      },
+    },
+    sessionPersistence: {
+      async stat(sessionId) {
+        const header = created.find((entry) => entry.id === sessionId);
+        if (header === undefined) return undefined;
+        const directory = join(storageRoot, sessionId);
+        mkdirSync(directory, { recursive: true });
+        writeFileSync(join(directory, 'session.v4.jsonl.zstd'), 'log');
+        return { kind: 'jsonl', path: join(directory, 'session.v4.jsonl.zstd') };
+      },
+      async create(header) {
+        if (options.createFails === true) throw new Error('create denied');
+        created.push(header);
+        return { header, async append() {}, async flush() {}, async close() {} };
+      },
+    },
+    workspaceRegistry: {
+      get: (id) => (id === workspace.id ? workspace : undefined),
+      async resolveByPath() {
+        return undefined;
+      },
+    },
+    sessions: {
+      get: (id) => liveSessions.get(id),
+      list: () => Array.from(liveSessions.values()).map((entry) => ({ id: entry.id })),
+      store: liveSessions,
+      async flush() {},
+    },
+    agents: {
+      list: () => Array.from(liveAgents.values()).map((entry) => entry.agent),
+      store: liveAgents,
+      detachEntered: (entry) => liveAgents.delete(entry.id),
+    },
+  };
+  return {
+    ctx: {
+      get: (name) => services[name],
+      on: (event, cb) => {
+        const arr = listeners.get(event) ?? [];
+        arr.push(cb);
+        listeners.set(event, arr);
+        return () => {};
+      },
+      emit: (event, payload) => {
+        emitLog.push({ event, payload });
+      },
+      logger: { warn() {} },
+    },
+    storageRoot,
+    cacheRoot,
+    attached,
+    detached,
+    listeners,
+    markLive,
+    cancelled,
+    emitLog,
+  };
+}
+
+/** Poll an async condition for a short while before asserting it. */
+async function until(predicate, label) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.ok(predicate(), label);
+}
+
+
+test('undoImportedSession removes storage, detaches the workspace, and forgets the id', async () => {
+  const harness = undoHarness();
+  const result = await importSession(harness.ctx, {
+    buffer: readFileSync(join(fixtures, 'zip-src', 'session.v4.jsonl')),
+    cwd,
+    workspaceId: 'workspace-1',
+  });
+  assert.equal(result.workspaceId, 'workspace-1');
+  assert.deepEqual(harness.attached, [result.sessionId]);
+  const listed = listUndoableImports(harness.ctx);
+  assert.equal(listed.length, 1, 'the import is listed as undoable');
+  assert.equal(listed[0].sessionId, result.sessionId);
+  assert.equal(listed[0].workspaceId, 'workspace-1');
+  assert.equal(listed[0].eventCount, result.eventCount);
+  assert.equal(typeof listed[0].importedAt, 'number');
+  const registryDir = join(process.env.DSH_HOME, 'session-port');
+  assert.equal(statSync(registryDir).mode & 0o777, 0o700, 'registry directory is owner-only');
+  assert.equal(
+    statSync(join(registryDir, 'imports.json')).mode & 0o777,
+    0o600,
+    'registry file is owner-only like the other DSH state files',
+  );
+
+  const undone = await undoImportedSession(harness.ctx, {
+    sessionId: result.sessionId,
+    projectionCacheDirectory: harness.cacheRoot,
+  });
+  assert.deepEqual(undone, { sessionId: result.sessionId, warnings: [], deferred: false });
+  assert.deepEqual(harness.detached, [result.sessionId], 'workspace membership detached');
+  assert.equal(
+    existsSync(join(harness.storageRoot, result.sessionId)),
+    false,
+    'the session directory is removed',
+  );
+  assert.equal(listUndoableImports(harness.ctx).length, 0, 'undo removes the listing too');
+
+  await assert.rejects(
+    () => undoImportedSession(harness.ctx, { sessionId: result.sessionId }),
+    (error) => error instanceof Error && error.code === 'not-imported',
+    'a second undo of the same id is refused',
+  );
+});
+
+test('undoImportedSession refuses ids this process did not import', async () => {
+  const ctx = { get: () => undefined, logger: { warn() {} } };
+  await assert.rejects(
+    () => undoImportedSession(ctx, { sessionId: 'session-foreign' }),
+    (error) => error instanceof Error && error.code === 'not-imported',
+  );
+});
+
+test('undo stops a running session and completes immediately', async () => {
+  const harness = undoHarness();
+  const result = await importSession(harness.ctx, {
+    buffer: readFileSync(join(fixtures, 'zip-src', 'session.v4.jsonl')),
+    cwd,
+    workspaceId: 'workspace-1',
+  });
+  harness.markLive(result.sessionId);
+
+  const undone = await undoImportedSession(harness.ctx, {
+    sessionId: result.sessionId,
+    projectionCacheDirectory: harness.cacheRoot,
+  });
+  assert.equal(undone.deferred, false, 'a releasable live session needs no queue');
+  assert.ok(undone.warnings.some((warning) => warning.includes('停止并释放')), 'the stop is reported');
+  assert.deepEqual(harness.cancelled, [{ kind: 'user' }], 'the owning agent was cancelled');
+  assert.deepEqual(harness.detached, [result.sessionId], 'workspace membership detached');
+  assert.equal(
+    existsSync(join(harness.storageRoot, result.sessionId)),
+    false,
+    'the session directory is removed',
+  );
+  assert.equal(listUndoableImports(harness.ctx).length, 0, 'undo removes the listing too');
+  assert.ok(
+    harness.emitLog.some(({ event, payload }) => event === 'api-session/removed' && payload === result.sessionId),
+    'the removal was announced to connected clients',
+  );
+});
+
+test('an unreleasable running session queues, and the queue survives a restart', async () => {
+  const first = undoHarness({ failDetach: true });
+  watchPendingUndos(first.ctx);
+  const result = await importSession(first.ctx, {
+    buffer: readFileSync(join(fixtures, 'zip-src', 'session.v4.jsonl')),
+    cwd,
+    workspaceId: 'workspace-1',
+  });
+  first.markLive(result.sessionId);
+  const queued = await undoImportedSession(first.ctx, { sessionId: result.sessionId });
+  assert.equal(queued.deferred, true, 'a session that cannot be released queues instead of failing');
+  assert.ok(queued.warnings[0].includes('登记撤销'));
+  assert.deepEqual(first.detached, [], 'nothing is removed while the session runs');
+  const listed = listUndoableImports(first.ctx);
+  assert.equal(listed[0].pendingUndo, true, 'the record is marked queued');
+
+  // The Host disposes the session; the queued undo completes.
+  for (const listener of first.listeners.get('session/disposed') ?? []) listener({ id: result.sessionId });
+  await until(
+    () => first.detached.includes(result.sessionId) && listUndoableImports(first.ctx).length === 0,
+    'the queued undo completes after disposal',
+  );
+});
+
+test('the import registry survives a Host restart and a queued undo completes on startup', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'session-port-restart-home-'));
+  const first = undoHarness({ home, failDetach: true });
+  const result = await importSession(first.ctx, {
+    buffer: readFileSync(join(fixtures, 'zip-src', 'session.v4.jsonl')),
+    cwd,
+    workspaceId: 'workspace-1',
+  });
+  first.markLive(result.sessionId);
+  const queued = await undoImportedSession(first.ctx, { sessionId: result.sessionId });
+  assert.equal(queued.deferred, true);
+
+  // A restarted Host: a new plugin context over the same DSH_HOME; every session cold.
+  const second = undoHarness({ home });
+  const listed = listUndoableImports(second.ctx);
+  assert.equal(listed.length, 1, 'the registry hydrates from the mirror file');
+  assert.equal(listed[0].sessionId, result.sessionId);
+  assert.equal(listed[0].pendingUndo, true, 'the queued flag survives too');
+  watchPendingUndos(second.ctx);
+  await until(
+    () => second.detached.includes(result.sessionId) && listUndoableImports(second.ctx).length === 0,
+    'the startup sweep completes the queued undo',
+  );
 });
 
 test('writeExportFile writes the archive into the requested directory', async () => {
